@@ -97,18 +97,18 @@ jobs:
         run: gradle assembleRelease --no-daemon
 
       - name: Rename APK for direct mobile download
-        run: cp app/build/outputs/apk/release/app-release.apk Bayan-v2.0.1.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Bayan-v2.0.2.apk
 
       - name: Publish APK to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.1
-          name: Bayan V2.0.1 (Android APK)
-          body: "تطبيق بيان مترجم الفيديو والصوت الفوري - نسخة محدّثة مع تهيئة Firebase الكاملة للتشغيل المباشر على أندرويد."
-          files: Bayan-v2.0.1.apk
+          tag_name: v2.0.2
+          name: Bayan V2.0.2 (Android APK)
+          body: "تطبيق بيان مترجم الفيديو والصوت الفوري - نسخة مع معالجة تلقائية لضغط الخادم والانتقال السلس للنموذج البديل."
+          files: Bayan-v2.0.2.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Bayan-v2.0.1-APK
-          path: Bayan-v2.0.1.apk
+          name: Bayan-v2.0.2-APK
+          path: Bayan-v2.0.2.apk

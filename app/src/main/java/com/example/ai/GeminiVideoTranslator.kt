@@ -8,18 +8,23 @@ import com.example.data.VideoTranslationResult
 import com.example.data.VoiceTranslationResult
 import com.example.data.db.SubtitleCueEntity
 import com.google.firebase.Firebase
+import com.google.firebase.ai.GenerativeModel
 import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.GenerateContentResponse
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 
 private const val TAG = "GeminiVideoTranslator"
-private const val MODEL_NAME = "gemini-3.8-flash"
+private const val PRIMARY_MODEL_NAME = "gemini-3.8-flash"
+private const val FALLBACK_MODEL_NAME = "gemini-3.5-flash-lite"
 private const val AI_TIMEOUT_MS = 60_000L
 
 class GeminiVideoTranslator {
@@ -85,7 +90,18 @@ class GeminiVideoTranslator {
 
     private val transcriptionModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = MODEL_NAME,
+            modelName = PRIMARY_MODEL_NAME,
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = translationSchema
+                temperature = 0.2f
+            }
+        )
+    }
+
+    private val transcriptionFallbackModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = FALLBACK_MODEL_NAME,
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = translationSchema
@@ -96,7 +112,18 @@ class GeminiVideoTranslator {
 
     private val retranslationModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = MODEL_NAME,
+            modelName = PRIMARY_MODEL_NAME,
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = retranslationSchema
+                temperature = 0.2f
+            }
+        )
+    }
+
+    private val retranslationFallbackModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = FALLBACK_MODEL_NAME,
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = retranslationSchema
@@ -107,7 +134,18 @@ class GeminiVideoTranslator {
 
     private val voiceModel by lazy {
         Firebase.ai.generativeModel(
-            modelName = MODEL_NAME,
+            modelName = PRIMARY_MODEL_NAME,
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = voiceSchema
+                temperature = 0.2f
+            }
+        )
+    }
+
+    private val voiceFallbackModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = FALLBACK_MODEL_NAME,
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = voiceSchema
@@ -152,8 +190,11 @@ class GeminiVideoTranslator {
         """.trimIndent()
 
         try {
-            val response = withTimeout(AI_TIMEOUT_MS) {
-                transcriptionModel.generateContent(
+            val response = generateWithFallback(
+                primaryModel = transcriptionModel,
+                fallbackModel = transcriptionFallbackModel
+            ) { model ->
+                model.generateContent(
                     content {
                         inlineData(mediaBytes, mimeType)
                         text(prompt)
@@ -171,7 +212,7 @@ class GeminiVideoTranslator {
         } catch (e: Exception) {
             Log.e(TAG, "Firebase AI transcription failed", e)
             throw IllegalStateException(
-                e.localizedMessage ?: "تعذرت معالجة الصوت والترجمة عبر الذكاء الاصطناعي."
+                formatUserFacingError(e, "تعذرت معالجة الصوت والترجمة عبر الذكاء الاصطناعي.")
             )
         }
     }
@@ -198,8 +239,11 @@ class GeminiVideoTranslator {
         """.trimIndent()
 
         try {
-            val response = withTimeout(AI_TIMEOUT_MS) {
-                voiceModel.generateContent(
+            val response = generateWithFallback(
+                primaryModel = voiceModel,
+                fallbackModel = voiceFallbackModel
+            ) { model ->
+                model.generateContent(
                     content {
                         inlineData(audioBytes, mimeType)
                         text(prompt)
@@ -234,7 +278,7 @@ class GeminiVideoTranslator {
         } catch (e: Exception) {
             Log.e(TAG, "Voice translation failed", e)
             throw IllegalStateException(
-                e.localizedMessage ?: "تعذرت ترجمة التسجيل الصوتي."
+                formatUserFacingError(e, "تعذرت ترجمة التسجيل الصوتي.")
             )
         }
     }
@@ -263,8 +307,11 @@ class GeminiVideoTranslator {
         """.trimIndent()
 
         try {
-            val response = withTimeout(AI_TIMEOUT_MS) {
-                retranslationModel.generateContent(prompt)
+            val response = generateWithFallback(
+                primaryModel = retranslationModel,
+                fallbackModel = retranslationFallbackModel
+            ) { model ->
+                model.generateContent(prompt)
             }
             val rawJson = response.text
                 ?: throw IllegalStateException("لم يُرجع النموذج ترجمة محدثة.")
@@ -291,7 +338,61 @@ class GeminiVideoTranslator {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Retranslation failed", e)
-            throw IllegalStateException(e.localizedMessage ?: "تعذرت إعادة الترجمة.")
+            throw IllegalStateException(
+                formatUserFacingError(e, "تعذرت إعادة الترجمة.")
+            )
+        }
+    }
+
+    private suspend fun generateWithFallback(
+        primaryModel: GenerativeModel,
+        fallbackModel: GenerativeModel,
+        call: suspend (GenerativeModel) -> GenerateContentResponse
+    ): GenerateContentResponse {
+        try {
+            return withTimeout(AI_TIMEOUT_MS) { call(primaryModel) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (!isTransientCapacityError(e)) throw e
+            Log.w(TAG, "Primary model $PRIMARY_MODEL_NAME under high demand, falling back to $FALLBACK_MODEL_NAME", e)
+            delay(750L)
+            try {
+                return withTimeout(AI_TIMEOUT_MS) { call(fallbackModel) }
+            } catch (fallbackErr: CancellationException) {
+                throw fallbackErr
+            } catch (fallbackErr: Exception) {
+                if (!isTransientCapacityError(fallbackErr)) throw fallbackErr
+                Log.w(TAG, "Fallback model also busy, retrying once after brief delay", fallbackErr)
+                delay(1500L)
+                return withTimeout(AI_TIMEOUT_MS) { call(fallbackModel) }
+            }
+        }
+    }
+
+    private fun isTransientCapacityError(e: Throwable): Boolean {
+        val msg = (e.message ?: e.localizedMessage ?: "").lowercase()
+        return msg.contains("high demand") ||
+            msg.contains("overloaded") ||
+            msg.contains("temporarily unavailable") ||
+            msg.contains("service unavailable") ||
+            msg.contains("try again later") ||
+            msg.contains("resource exhausted") ||
+            msg.contains("rate limit") ||
+            msg.contains("503") ||
+            msg.contains("429")
+    }
+
+    private fun formatUserFacingError(e: Throwable, defaultMessage: String): String {
+        val msg = (e.message ?: e.localizedMessage ?: "").trim()
+        val lower = msg.lowercase()
+        return when {
+            isTransientCapacityError(e) ->
+                "خادم الذكاء الاصطناعي مزدحم مؤقتاً بسبب ضغط الطلبات. انتظر ثوانٍ ثم حاول مجدداً."
+            e is IOException || lower.contains("unable to resolve host") || lower.contains("network") ->
+                "تعذر الاتصال بالإنترنت. تحقق من الشبكة وحاول مرة أخرى."
+            msg.isNotBlank() -> msg
+            else -> defaultMessage
         }
     }
 
