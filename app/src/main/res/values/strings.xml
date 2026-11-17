@@ -1,7 +1,7 @@
 <resources>
     <string name="app_name">بيان</string>
     <string name="app_subtitle">مترجم الفيديو والصوت الفوري</string>
-    <string name="version_badge">v2.0</string>
+    <string name="version_badge">v2.0.1</string>
     <string name="tab_video_studio">استوديو الفيديو</string>
     <string name="tab_voice_translator">المترجم الصوتي</string>
     <string name="pick_video_cta">اختر مقطع فيديو للترجمة</string>
@@ -43,5 +43,5 @@
     <string name="voice_empty_history">ابدأ بتسجيل جملة أو محادثة قصيرة لعرض النص والترجمة الفورية هنا.</string>
     <string name="voice_listen_desc">استماع للنطق</string>
     <string name="cloud_status_title">حالة الخادم السحابي وتنزيل الهاتف</string>
-    <string name="cloud_status_badge">خادم دائم • v2.0</string>
+    <string name="cloud_status_badge">خادم دائم • v2.0.1</string>
 </resources>
