@@ -1,0 +1,6 @@
+{
+  "name": "بيان",
+  "description": "مترجم فيديو ذكي مع تحويل الكلام إلى نص وترجمة فورية وتصدير ملفات الترجمة",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

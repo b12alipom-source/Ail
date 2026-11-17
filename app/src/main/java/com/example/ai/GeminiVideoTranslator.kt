@@ -1,0 +1,348 @@
+package com.example.ai
+
+import android.util.Log
+import com.example.data.GeneratedSegment
+import com.example.data.LanguageOption
+import com.example.data.SupportedLanguages
+import com.example.data.VideoTranslationResult
+import com.example.data.VoiceTranslationResult
+import com.example.data.db.SubtitleCueEntity
+import com.google.firebase.Firebase
+import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.Schema
+import com.google.firebase.ai.type.content
+import com.google.firebase.ai.type.generationConfig
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
+import org.json.JSONArray
+import org.json.JSONObject
+
+private const val TAG = "GeminiVideoTranslator"
+private const val MODEL_NAME = "gemini-3.8-flash"
+private const val AI_TIMEOUT_MS = 60_000L
+
+class GeminiVideoTranslator {
+
+    private val translationSchema = Schema.obj(
+        properties = mapOf(
+            "detectedLanguageCode" to Schema.string(
+                description = "ISO 639-1 two-letter language code of the spoken audio, e.g. en, ar, fr, es"
+            ),
+            "detectedLanguageNameArabic" to Schema.string(
+                description = "Arabic name of the detected spoken language, e.g. الإنجليزية or العربية"
+            ),
+            "summary" to Schema.string(
+                description = "Concise 1-2 sentence summary of the spoken content written in the target language"
+            ),
+            "segments" to Schema.array(
+                items = Schema.obj(
+                    properties = mapOf(
+                        "startMs" to Schema.integer(description = "Segment start time in milliseconds relative to this clip"),
+                        "endMs" to Schema.integer(description = "Segment end time in milliseconds relative to this clip"),
+                        "originalText" to Schema.string(description = "Accurate verbatim transcription in original spoken language"),
+                        "translatedText" to Schema.string(description = "Natural, fluent translation into the target language")
+                    )
+                ),
+                description = "Chronological subtitle segments covering all speech in this audio clip"
+            )
+        )
+    )
+
+    private val retranslationSchema = Schema.obj(
+        properties = mapOf(
+            "summary" to Schema.string(
+                description = "Concise 1-2 sentence summary written in the new target language"
+            ),
+            "translations" to Schema.array(
+                items = Schema.obj(
+                    properties = mapOf(
+                        "orderIndex" to Schema.integer(description = "Original orderIndex from input"),
+                        "translatedText" to Schema.string(description = "Translated subtitle text in the new target language")
+                    )
+                ),
+                description = "Translated lines matching every input orderIndex"
+            )
+        )
+    )
+
+    private val voiceSchema = Schema.obj(
+        properties = mapOf(
+            "detectedLanguageCode" to Schema.string(
+                description = "ISO 639-1 two-letter code of the spoken audio"
+            ),
+            "detectedLanguageNameArabic" to Schema.string(
+                description = "Arabic name of the detected language, e.g. الإنجليزية"
+            ),
+            "originalText" to Schema.string(
+                description = "Accurate verbatim transcription of what was spoken"
+            ),
+            "translatedText" to Schema.string(
+                description = "Natural fluent translation in the requested target language"
+            )
+        )
+    )
+
+    private val transcriptionModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = MODEL_NAME,
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = translationSchema
+                temperature = 0.2f
+            }
+        )
+    }
+
+    private val retranslationModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = MODEL_NAME,
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = retranslationSchema
+                temperature = 0.2f
+            }
+        )
+    }
+
+    private val voiceModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = MODEL_NAME,
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = voiceSchema
+                temperature = 0.2f
+            }
+        )
+    }
+
+    suspend fun transcribeAndTranslateChunk(
+        mediaBytes: ByteArray,
+        mimeType: String,
+        chunkDurationMs: Long,
+        startOffsetMs: Long,
+        sourceLanguage: LanguageOption,
+        targetLanguage: LanguageOption,
+        allowEmptySegments: Boolean = false
+    ): VideoTranslationResult {
+        val sourceHint = if (sourceLanguage.code == SupportedLanguages.autoDetect.code) {
+            "Auto-detect the primary spoken language accurately."
+        } else {
+            "The spoken language is ${sourceLanguage.nativeName} (${sourceLanguage.code})."
+        }
+
+        val durationHint = if (chunkDurationMs > 0L) {
+            "This audio clip starts at 0 ms and has duration $chunkDurationMs ms. Keep all startMs and endMs within 0..$chunkDurationMs."
+        } else {
+            "Provide accurate millisecond timestamps starting from 0."
+        }
+
+        val prompt = """
+            You are an expert broadcast subtitle engineer and literary translator.
+            Listen carefully to the provided audio/video stream and produce synchronized subtitles.
+            Rules:
+            1. $sourceHint
+            2. Transcribe every spoken phrase verbatim in its original script inside `originalText`.
+            3. Translate each segment accurately and naturally into ${targetLanguage.nativeName} (ISO: ${targetLanguage.code}, Arabic label: ${targetLanguage.arabicName}) inside `translatedText`.
+            4. Split speech into clean, readable subtitle cues (typically 1.5 to 5 seconds each, 1-2 short lines per cue).
+            5. $durationHint Ensure startMs < endMs and segments are ordered chronologically without overlapping.
+            6. Write `summary` as a clear 1-2 sentence overview in ${targetLanguage.nativeName}.
+            7. Write `detectedLanguageNameArabic` in Arabic (e.g. الإنجليزية, العربية, الفرنسية).
+            8. If there is no speech in this clip, return an empty `segments` array.
+        """.trimIndent()
+
+        try {
+            val response = withTimeout(AI_TIMEOUT_MS) {
+                transcriptionModel.generateContent(
+                    content {
+                        inlineData(mediaBytes, mimeType)
+                        text(prompt)
+                    }
+                )
+            }
+            val rawJson = response.text
+                ?: throw IllegalStateException("لم يُرجع نموذج الذكاء الاصطناعي أي بيانات.")
+            return parseTranslationJson(rawJson, chunkDurationMs, startOffsetMs, allowEmptySegments)
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Transcription timed out", e)
+            throw IllegalStateException("استغرقت معالجة هذا الجزء وقتاً طويلاً. تأكد من الاتصال وحاول مجدداً.")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Firebase AI transcription failed", e)
+            throw IllegalStateException(
+                e.localizedMessage ?: "تعذرت معالجة الصوت والترجمة عبر الذكاء الاصطناعي."
+            )
+        }
+    }
+
+    suspend fun translateVoiceClip(
+        audioBytes: ByteArray,
+        mimeType: String,
+        sourceLanguage: LanguageOption,
+        targetLanguage: LanguageOption
+    ): VoiceTranslationResult {
+        val sourceHint = if (sourceLanguage.code == SupportedLanguages.autoDetect.code) {
+            "Auto-detect the spoken language."
+        } else {
+            "The speaker is speaking ${sourceLanguage.nativeName} (${sourceLanguage.code})."
+        }
+
+        val prompt = """
+            You are an instant real-time voice interpreter.
+            Listen to the recorded voice message and:
+            1. $sourceHint
+            2. Transcribe the exact spoken words in `originalText`.
+            3. Translate them naturally and idiomatically into ${targetLanguage.nativeName} (${targetLanguage.code}) in `translatedText`.
+            4. Set `detectedLanguageNameArabic` in Arabic (e.g. العربية, الإنجليزية, التركية).
+        """.trimIndent()
+
+        try {
+            val response = withTimeout(AI_TIMEOUT_MS) {
+                voiceModel.generateContent(
+                    content {
+                        inlineData(audioBytes, mimeType)
+                        text(prompt)
+                    }
+                )
+            }
+            val rawJson = response.text
+                ?: throw IllegalStateException("لم يتم استلام استجابة من المترجم الصوتي.")
+            val json = JSONObject(rawJson)
+            val detectedCode = json.optString("detectedLanguageCode", sourceLanguage.code)
+                .ifBlank { "auto" }
+            val detectedAr = json.optString("detectedLanguageNameArabic", "")
+                .ifBlank { SupportedLanguages.findByCode(detectedCode).arabicName }
+            val originalText = json.optString("originalText", "").trim()
+            val translatedText = json.optString("translatedText", "").trim()
+
+            if (originalText.isEmpty() && translatedText.isEmpty()) {
+                throw IllegalStateException("لم يُسمع كلام واضح في التسجيل. حاول التحدث بالقرب من الميكروفون.")
+            }
+
+            return VoiceTranslationResult(
+                detectedLanguageCode = detectedCode,
+                detectedLanguageNameArabic = detectedAr,
+                originalText = originalText,
+                translatedText = translatedText.ifEmpty { originalText }
+            )
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Voice translation timed out", e)
+            throw IllegalStateException("انتهت مهلة الترجمة الصوتية. حاول مرة أخرى.")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Voice translation failed", e)
+            throw IllegalStateException(
+                e.localizedMessage ?: "تعذرت ترجمة التسجيل الصوتي."
+            )
+        }
+    }
+
+    suspend fun retranslateCues(
+        cues: List<SubtitleCueEntity>,
+        sourceLanguageName: String,
+        newTargetLanguage: LanguageOption
+    ): Pair<String, Map<Long, String>> {
+        val payloadArray = JSONArray()
+        cues.forEach { cue ->
+            payloadArray.put(
+                JSONObject().apply {
+                    put("orderIndex", cue.orderIndex)
+                    put("originalText", cue.originalText)
+                }
+            )
+        }
+
+        val prompt = """
+            Translate the following subtitle segments from $sourceLanguageName into ${newTargetLanguage.nativeName} (ISO: ${newTargetLanguage.code}).
+            Preserve the exact meaning, tone, and concise subtitle phrasing for each `orderIndex`.
+            Also provide a 1-2 sentence `summary` in ${newTargetLanguage.nativeName}.
+            Input segments JSON:
+            $payloadArray
+        """.trimIndent()
+
+        try {
+            val response = withTimeout(AI_TIMEOUT_MS) {
+                retranslationModel.generateContent(prompt)
+            }
+            val rawJson = response.text
+                ?: throw IllegalStateException("لم يُرجع النموذج ترجمة محدثة.")
+            val json = JSONObject(rawJson)
+            val summary = json.optString("summary", "")
+            val translationsArray = json.getJSONArray("translations")
+
+            val cueByOrder = cues.associateBy { it.orderIndex }
+            val resultMap = mutableMapOf<Long, String>()
+            for (i in 0 until translationsArray.length()) {
+                val item = translationsArray.getJSONObject(i)
+                val orderIndex = item.getInt("orderIndex")
+                val translated = item.getString("translatedText").trim()
+                val targetCue = cueByOrder[orderIndex]
+                if (targetCue != null && translated.isNotEmpty()) {
+                    resultMap[targetCue.id] = translated
+                }
+            }
+            return summary to resultMap
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Retranslation timed out", e)
+            throw IllegalStateException("انتهت مهلة إعادة الترجمة. حاول مرة أخرى.")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Retranslation failed", e)
+            throw IllegalStateException(e.localizedMessage ?: "تعذرت إعادة الترجمة.")
+        }
+    }
+
+    private fun parseTranslationJson(
+        rawJson: String,
+        chunkDurationMs: Long,
+        startOffsetMs: Long,
+        allowEmptySegments: Boolean
+    ): VideoTranslationResult {
+        val json = JSONObject(rawJson)
+        val detectedCode = json.optString("detectedLanguageCode", "en").ifBlank { "en" }
+        val detectedNameAr = json.optString("detectedLanguageNameArabic", "")
+            .ifBlank { SupportedLanguages.findByCode(detectedCode).arabicName }
+        val summary = json.optString("summary", "")
+        val segmentsJson = json.optJSONArray("segments") ?: JSONArray()
+
+        val parsedSegments = mutableListOf<GeneratedSegment>()
+        for (i in 0 until segmentsJson.length()) {
+            val item = segmentsJson.getJSONObject(i)
+            val original = item.optString("originalText", "").trim()
+            val translated = item.optString("translatedText", "").trim()
+            if (original.isEmpty() && translated.isEmpty()) continue
+
+            var localStart = item.optLong("startMs", 0L).coerceAtLeast(0L)
+            var localEnd = item.optLong("endMs", localStart + 2000L)
+            if (chunkDurationMs > 0L) {
+                localStart = localStart.coerceAtMost((chunkDurationMs - 400L).coerceAtLeast(0L))
+                localEnd = localEnd.coerceIn(localStart + 300L, chunkDurationMs)
+            } else if (localEnd <= localStart) {
+                localEnd = localStart + 1500L
+            }
+
+            parsedSegments.add(
+                GeneratedSegment(
+                    startMs = startOffsetMs + localStart,
+                    endMs = startOffsetMs + localEnd,
+                    originalText = original,
+                    translatedText = translated.ifEmpty { original }
+                )
+            )
+        }
+
+        if (parsedSegments.isEmpty() && !allowEmptySegments) {
+            throw IllegalStateException("لم يتم رصد أي كلام منطوق واضح في هذا المقطع.")
+        }
+
+        return VideoTranslationResult(
+            detectedLanguageCode = detectedCode,
+            detectedLanguageNameArabic = detectedNameAr,
+            summary = summary,
+            segments = parsedSegments.sortedBy { it.startMs }
+        )
+    }
+}
