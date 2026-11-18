@@ -31,6 +31,10 @@ import com.example.media.MediaPreparationException
 import com.example.media.OfflineSpeechHelper
 import com.example.media.OnDeviceVideoTranscriber
 import com.example.media.VoiceRecorder
+import com.example.media.VoskDownloadProgress
+import com.example.media.VoskLiveMicRecognizer
+import com.example.media.VoskModelDescriptor
+import com.example.media.VoskModelManager
 import com.example.security.SecurityAuditReport
 import com.example.security.SecurityInspector
 import com.example.service.TranslationKeepAliveService
@@ -103,8 +107,12 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         OfflineTranslationEngine()
     }
 
+    private val voskModelManager: VoskModelManager by lazy {
+        VoskModelManager(getApplication())
+    }
+
     private val onDeviceVideoTranscriber: OnDeviceVideoTranscriber by lazy {
-        OnDeviceVideoTranscriber(getApplication(), offlineTranslator)
+        OnDeviceVideoTranscriber(getApplication(), offlineTranslator, voskModelManager)
     }
 
     private val voiceRecorder: VoiceRecorder by lazy {
@@ -114,6 +122,12 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
     private val offlineSpeechHelper: OfflineSpeechHelper by lazy {
         OfflineSpeechHelper(getApplication())
     }
+
+    private val voskLiveMicRecognizer: VoskLiveMicRecognizer by lazy {
+        VoskLiveMicRecognizer()
+    }
+
+    private var activeOfflineVoskMic = false
 
     val securityReport: SecurityAuditReport by lazy {
         SecurityInspector.inspectApp(getApplication())
@@ -155,6 +169,18 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _packActionError = MutableStateFlow<String?>(null)
     val packActionError: StateFlow<String?> = _packActionError.asStateFlow()
+
+    val voskCatalog: List<VoskModelDescriptor>
+        get() = voskModelManager.getSupportedCatalog()
+
+    private val _downloadedVoskModels = MutableStateFlow<Set<String>>(emptySet())
+    val downloadedVoskModels: StateFlow<Set<String>> = _downloadedVoskModels.asStateFlow()
+
+    private val _voskDownloadProgress = MutableStateFlow<VoskDownloadProgress?>(null)
+    val voskDownloadProgress: StateFlow<VoskDownloadProgress?> = _voskDownloadProgress.asStateFlow()
+
+    private val _voskActionError = MutableStateFlow<String?>(null)
+    val voskActionError: StateFlow<String?> = _voskActionError.asStateFlow()
 
     private val _isCheckingAppCheck = MutableStateFlow(false)
     val isCheckingAppCheck: StateFlow<Boolean> = _isCheckingAppCheck.asStateFlow()
@@ -204,7 +230,41 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshOfflinePacks() {
         viewModelScope.launch {
             _downloadedOfflinePacks.value = offlineTranslator.getDownloadedLanguageCodes()
+            _downloadedVoskModels.value = voskModelManager.getDownloadedLanguageCodes()
         }
+    }
+
+    fun downloadVoskModel(languageCode: String) {
+        if (_voskDownloadProgress.value != null) return
+        viewModelScope.launch {
+            _voskActionError.value = null
+            _voskDownloadProgress.value = VoskDownloadProgress(
+                langCode = languageCode,
+                progressPercent = 0,
+                statusLabel = "جاري التحضير للتنزيل…"
+            )
+            val result = voskModelManager.ensureModelDownloaded(languageCode) { prog ->
+                _voskDownloadProgress.value = prog
+            }
+            result.onFailure { err ->
+                _voskActionError.value = err.localizedMessage ?: "تعذر تنزيل نموذج الكلام."
+            }
+            _voskDownloadProgress.value = null
+            _downloadedVoskModels.value = voskModelManager.getDownloadedLanguageCodes()
+        }
+    }
+
+    fun deleteVoskModel(languageCode: String) {
+        if (_voskDownloadProgress.value != null) return
+        viewModelScope.launch {
+            _voskActionError.value = null
+            voskModelManager.deleteModel(languageCode)
+            _downloadedVoskModels.value = voskModelManager.getDownloadedLanguageCodes()
+        }
+    }
+
+    fun dismissVoskError() {
+        _voskActionError.value = null
     }
 
     fun downloadOfflinePack(languageCode: String) {
@@ -708,11 +768,19 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         val chosenSource = _sourceLanguage.value
         val chosenTarget = _targetLanguage.value
         val effectiveSource = if (chosenSource.code == SupportedLanguages.autoDetect.code) {
-            if (chosenTarget.code == "ar") SupportedLanguages.findByCode("en") else SupportedLanguages.findByCode("ar")
+            val installedVosk = voskModelManager.resolvePreferredInstalledLanguage(chosenTarget.code)
+            if (installedVosk != null) {
+                SupportedLanguages.findByCode(installedVosk)
+            } else if (chosenTarget.code == "ar") {
+                SupportedLanguages.findByCode("en")
+            } else {
+                SupportedLanguages.findByCode("ar")
+            }
         } else {
             chosenSource
         }
 
+        val voskModelDir = voskModelManager.getModelDirectoryIfReady(effectiveSource.code)
         val startTime = System.currentTimeMillis()
         _voiceUiState.value = VoiceUiState.Recording(amplitude = 0.15f, elapsedMs = 0L, isOfflineMode = true)
         recordingMeterJob?.cancel()
@@ -724,6 +792,66 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        val handleRecognizedText: (String, Boolean) -> Unit = { spokenText, usedVosk ->
+            recordingMeterJob?.cancel()
+            recordingMeterJob = null
+            activeOfflineVoskMic = false
+            voiceProcessingJob?.cancel()
+            voiceProcessingJob = viewModelScope.launch {
+                _voiceUiState.value = VoiceUiState.Translating
+                try {
+                    val translationSource = if (usedVosk) effectiveSource else chosenSource
+                    val offlineRes = offlineTranslator.translateText(
+                        text = spokenText,
+                        sourceLanguage = translationSource,
+                        targetLanguage = chosenTarget
+                    )
+                    refreshOfflinePacks()
+                    val engineSuffix = if (usedVosk) "Vosk محلي" else "محلي"
+                    repository.saveVoiceTranslation(
+                        chosenTarget,
+                        VoiceTranslationResult(
+                            detectedLanguageCode = offlineRes.detectedLanguageCode,
+                            detectedLanguageNameArabic = "${offlineRes.detectedLanguageNameArabic} ($engineSuffix)",
+                            originalText = spokenText,
+                            translatedText = offlineRes.translatedText
+                        )
+                    )
+                    _voiceUiState.value = VoiceUiState.Idle
+                } catch (e: CancellationException) {
+                    _voiceUiState.value = VoiceUiState.Idle
+                    throw e
+                } catch (e: Exception) {
+                    _voiceUiState.value = VoiceUiState.Error(
+                        e.localizedMessage ?: "تعذرت الترجمة الصوتية المحلية."
+                    )
+                }
+            }
+        }
+
+        if (voskModelDir != null) {
+            activeOfflineVoskMic = true
+            voskLiveMicRecognizer.startListening(
+                scope = viewModelScope,
+                modelDir = voskModelDir,
+                onRmsChanged = { rms ->
+                    val cur = _voiceUiState.value as? VoiceUiState.Recording
+                    if (cur != null) {
+                        _voiceUiState.value = cur.copy(amplitude = rms)
+                    }
+                },
+                onResult = { spokenText -> handleRecognizedText(spokenText, true) },
+                onError = { message ->
+                    recordingMeterJob?.cancel()
+                    recordingMeterJob = null
+                    activeOfflineVoskMic = false
+                    _voiceUiState.value = VoiceUiState.Error(message)
+                }
+            )
+            return
+        }
+
+        activeOfflineVoskMic = false
         offlineSpeechHelper.startListening(
             languageCode = effectiveSource.code,
             preferOffline = true,
@@ -733,43 +861,13 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     _voiceUiState.value = cur.copy(amplitude = rms)
                 }
             },
-            onResult = { spokenText ->
-                recordingMeterJob?.cancel()
-                recordingMeterJob = null
-                voiceProcessingJob?.cancel()
-                voiceProcessingJob = viewModelScope.launch {
-                    _voiceUiState.value = VoiceUiState.Translating
-                    try {
-                        val offlineRes = offlineTranslator.translateText(
-                            text = spokenText,
-                            sourceLanguage = chosenSource,
-                            targetLanguage = chosenTarget
-                        )
-                        refreshOfflinePacks()
-                        repository.saveVoiceTranslation(
-                            chosenTarget,
-                            VoiceTranslationResult(
-                                detectedLanguageCode = offlineRes.detectedLanguageCode,
-                                detectedLanguageNameArabic = "${offlineRes.detectedLanguageNameArabic} (محلي)",
-                                originalText = spokenText,
-                                translatedText = offlineRes.translatedText
-                            )
-                        )
-                        _voiceUiState.value = VoiceUiState.Idle
-                    } catch (e: CancellationException) {
-                        _voiceUiState.value = VoiceUiState.Idle
-                        throw e
-                    } catch (e: Exception) {
-                        _voiceUiState.value = VoiceUiState.Error(
-                            e.localizedMessage ?: "تعذرت الترجمة الصوتية المحلية."
-                        )
-                    }
-                }
-            },
+            onResult = { spokenText -> handleRecognizedText(spokenText, false) },
             onError = { message ->
                 recordingMeterJob?.cancel()
                 recordingMeterJob = null
-                _voiceUiState.value = VoiceUiState.Error(message)
+                _voiceUiState.value = VoiceUiState.Error(
+                    "$message\nتلميح: ثبّت نموذج Vosk للغة ${effectiveSource.arabicName} من «مركز الاستقلالية والأمان» ليعمل المايك أوفلاين بدون خدمات الجهاز."
+                )
             }
         )
     }
@@ -777,7 +875,11 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
     fun stopAndTranslateVoice() {
         val current = _voiceUiState.value as? VoiceUiState.Recording ?: return
         if (current.isOfflineMode) {
-            offlineSpeechHelper.stopListening()
+            if (activeOfflineVoskMic) {
+                voskLiveMicRecognizer.stopListening()
+            } else {
+                offlineSpeechHelper.stopListening()
+            }
             return
         }
 
@@ -826,8 +928,10 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
     fun cancelVoiceRecording() {
         recordingMeterJob?.cancel()
         recordingMeterJob = null
+        activeOfflineVoskMic = false
         voiceRecorder.stopAndCleanupOnly()
         offlineSpeechHelper.stopAndDestroy()
+        voskLiveMicRecognizer.stopAndCancel()
         _voiceUiState.value = VoiceUiState.Idle
     }
 
@@ -1117,5 +1221,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         recordingMeterJob?.cancel()
         voiceRecorder.stopAndCleanupOnly()
         offlineSpeechHelper.stopAndDestroy()
+        voskLiveMicRecognizer.stopAndCancel()
     }
 }

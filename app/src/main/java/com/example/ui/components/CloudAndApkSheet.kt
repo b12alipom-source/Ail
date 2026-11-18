@@ -27,6 +27,7 @@ import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DownloadForOffline
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Shield
@@ -38,6 +39,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -66,6 +68,8 @@ import com.example.R
 import com.example.ai.AppCheckDiagnosticState
 import kotlinx.coroutines.delay
 import com.example.data.SupportedLanguages
+import com.example.media.VoskDownloadProgress
+import com.example.media.VoskModelDescriptor
 import com.example.security.SecurityAuditReport
 import com.example.ui.theme.CoralError
 import com.example.ui.theme.EmeraldSuccess
@@ -90,12 +94,19 @@ fun CloudAndApkSheet(
     downloadedOfflinePacks: Set<String>,
     downloadingPackCode: String?,
     packActionError: String?,
+    voskCatalog: List<VoskModelDescriptor>,
+    downloadedVoskModels: Set<String>,
+    voskDownloadProgress: VoskDownloadProgress?,
+    voskActionError: String?,
     securityReport: SecurityAuditReport,
     onToggleOfflineMode: (Boolean) -> Unit,
     onRunAppCheckDiagnostics: () -> Unit,
     onDownloadPack: (String) -> Unit,
     onDeletePack: (String) -> Unit,
     onDismissPackError: () -> Unit,
+    onDownloadVoskModel: (String) -> Unit,
+    onDeleteVoskModel: (String) -> Unit,
+    onDismissVoskError: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -303,7 +314,154 @@ fun CloudAndApkSheet(
                 }
             }
 
-            // 3. Offline Language Packs Manager
+            // 3. Embedded Vosk Offline Speech Recognition Models
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MidnightSurfaceHigh,
+                border = BorderStroke(1.dp, MidnightBorderSubtle),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Outlined.GraphicEq,
+                            contentDescription = null,
+                            tint = EmeraldSuccess,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "نماذج الكلام الأوفلاين للفيديو والمايك (Vosk)",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = SilverPure
+                        )
+                    }
+                    Text(
+                        text = "محرك Vosk مدمج داخل التطبيق لتفريغ كلام الفيديو والمايك أوفلاين بدون خدمات النظام. ثبّت لغة الفيديو مرة واحدة وسيعمل دائماً حتى بدون إنترنت.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SilverMetallic
+                    )
+
+                    voskDownloadProgress?.let { prog ->
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MidnightNavy,
+                            border = BorderStroke(1.dp, IceSapphire.copy(alpha = 0.45f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = prog.statusLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = IceSapphireGlow
+                                )
+                                val pct = prog.progressPercent
+                                if (pct != null && pct in 1..99) {
+                                    LinearProgressIndicator(
+                                        progress = { pct / 100f },
+                                        color = EmeraldSuccess,
+                                        trackColor = MidnightSurfaceHigh,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                } else {
+                                    LinearProgressIndicator(
+                                        color = IceSapphireGlow,
+                                        trackColor = MidnightSurfaceHigh,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    voskActionError?.let { err ->
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = CoralError.copy(alpha = 0.14f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onDismissVoskError() }
+                        ) {
+                            Text(
+                                text = err,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SilverPure,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        voskCatalog.take(8).forEach { model ->
+                            val isInstalled = downloadedVoskModels.contains(model.langCode)
+                            val isBusyThis = voskDownloadProgress?.langCode == model.langCode
+                            Surface(
+                                shape = RoundedCornerShape(99.dp),
+                                color = if (isInstalled) EmeraldSuccess.copy(alpha = 0.18f) else MidnightNavy,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isInstalled) EmeraldSuccess else MidnightBorderSubtle
+                                ),
+                                modifier = Modifier
+                                    .testTag("vosk_pack_${model.langCode}")
+                                    .clickable(enabled = voskDownloadProgress == null) {
+                                        if (isInstalled) {
+                                            onDeleteVoskModel(model.langCode)
+                                        } else {
+                                            onDownloadVoskModel(model.langCode)
+                                        }
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    when {
+                                        isBusyThis -> CircularProgressIndicator(
+                                            color = IceSapphireGlow,
+                                            strokeWidth = 2.dp,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        isInstalled -> Icon(
+                                            imageVector = Icons.Outlined.DeleteOutline,
+                                            contentDescription = "حذف نموذج الكلام",
+                                            tint = EmeraldSuccess,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        else -> Icon(
+                                            imageVector = Icons.Outlined.DownloadForOffline,
+                                            contentDescription = "تنزيل نموذج الكلام",
+                                            tint = IceSapphireGlow,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = if (isInstalled) {
+                                            "${model.arabicName} ✓"
+                                        } else {
+                                            "${model.arabicName} (${model.sizeLabel})"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (isInstalled) SilverPure else SilverMetallic
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. Offline Text Translation Language Packs Manager (ML Kit)
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = MidnightSurfaceHigh,

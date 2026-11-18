@@ -1,44 +1,31 @@
 package com.example.media
 
 import android.content.Context
-import android.content.Intent
 import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
-import android.os.Build
-import android.os.Bundle
-import android.os.ParcelFileDescriptor
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.util.Log
-import androidx.annotation.RequiresApi
 import com.example.ai.OfflineTranslationEngine
 import com.example.data.GeneratedSegment
 import com.example.data.LanguageOption
 import com.example.data.SupportedLanguages
 import com.example.data.VideoTranslationResult
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlin.coroutines.resume
+import kotlin.coroutines.coroutineContext
 import kotlin.math.sqrt
 
 private const val TAG = "OnDeviceVideoTranscriber"
 private const val TARGET_SAMPLE_RATE = 16_000
 private const val FRAME_SAMPLES_100MS = TARGET_SAMPLE_RATE / 10 // 1600 samples = 100ms
 private const val MACRO_WINDOW_DURATION_US = 60_000_000L // decode audio in 60s batches to keep RAM low
-private const val MAX_WINDOW_DURATION_MS = 9_500L
-private const val MIN_WINDOW_DURATION_MS = 800L
+private const val MAX_WINDOW_DURATION_MS = 12_000L
+private const val MIN_WINDOW_DURATION_MS = 700L
 private const val SILENCE_MERGE_FRAMES = 6 // 600ms
 
 data class SpeechPcmWindow(
@@ -52,7 +39,8 @@ class LocalVideoFallbackException(message: String, cause: Throwable? = null) :
 
 class OnDeviceVideoTranscriber(
     private val context: Context,
-    private val offlineTranslator: OfflineTranslationEngine
+    private val offlineTranslator: OfflineTranslationEngine,
+    private val voskModelManager: VoskModelManager
 ) {
 
     suspend fun transcribeAndTranslateLocally(
@@ -62,7 +50,7 @@ class OnDeviceVideoTranscriber(
         resumeFromMs: Long = 0L,
         onStageUpdate: (stageText: String, current: Int, total: Int) -> Unit
     ): VideoTranslationResult {
-        // 1. Check for embedded subtitle / timed-text track inside the video container (works on all APIs)
+        // 1. Check for embedded subtitle / timed-text track inside the video container (instant)
         onStageUpdate("جاري فحص مسارات الترجمة المدمجة في الفيديو…", 1, 3)
         val embeddedSegments = withContext(Dispatchers.IO) {
             tryExtractEmbeddedSubtitles(context, uri)
@@ -91,127 +79,132 @@ class OnDeviceVideoTranscriber(
             )
         }
 
-        // 2. On Android 13+ (API 33), pipe decoded 16kHz PCM audio into SpeechRecognizer EXTRA_AUDIO_SOURCE
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            throw LocalVideoFallbackException(
-                "التفريغ الصوتي التلقائي للفيديو أوفلاين يتطلب أندرويد 13 أو أحدث، أو استيراد ملف SRT/VTT مرفق."
-            )
-        }
+        // 2. Resolve source speech language for embedded Vosk engine
+        val effectiveSourceCode = resolveVoskSourceLanguage(sourceLanguage, targetLanguage)
+        val effectiveSourceOpt = SupportedLanguages.findByCode(effectiveSourceCode)
 
-        val recognitionLangTag = resolveSpeechLanguageTag(sourceLanguage, targetLanguage)
-        val effectiveSourceCode = if (sourceLanguage.code == SupportedLanguages.autoDetect.code) {
-            recognitionLangTag.substringBefore('-').lowercase()
-        } else {
-            sourceLanguage.code
-        }
-
-        val allRecognized = mutableListOf<GeneratedSegment>()
-        var macroOffsetUs = (resumeFromMs.coerceAtLeast(0L)) * 1000L
-        var macroIndex = 0
-
-        while (true) {
-            val batch = withContext(Dispatchers.IO) {
-                decodeAudioBatchTo16kMono(
-                    context = context,
-                    uri = uri,
-                    startTimeUs = macroOffsetUs,
-                    maxBatchDurationUs = MACRO_WINDOW_DURATION_US
+        // 3. Ensure Vosk model is ready (uses local files if installed, otherwise downloads once with progress)
+        var modelDir = voskModelManager.getModelDirectoryIfReady(effectiveSourceCode)
+        if (modelDir == null) {
+            val downloadResult = voskModelManager.ensureModelDownloaded(effectiveSourceCode) { prog ->
+                onStageUpdate(
+                    prog.statusLabel,
+                    prog.progressPercent ?: 1,
+                    100
                 )
-            } ?: break
+            }
+            modelDir = downloadResult.getOrElse { err ->
+                val descriptor = voskModelManager.getDescriptorForLanguage(effectiveSourceCode)
+                throw LocalVideoFallbackException(
+                    "للتفريغ الصوتي محلياً بدون إنترنت، يجب تنزيل نموذج الكلام للغة ${effectiveSourceOpt.arabicName} (${descriptor.sizeLabel}) مرة واحدة من «مركز الاستقلالية والأمان» أعلى الشاشة، أو استيراد ملف SRT.",
+                    err
+                )
+            }
+        }
 
-            macroIndex++
-            val windows = segmentActiveSpeechWindows(
-                samples16k = batch.samples,
-                baseOffsetMs = batch.actualStartMs
+        // 4. Decode video audio batches -> 16 kHz mono PCM -> Vosk word-timed recognition
+        onStageUpdate("جاري تحميل محرك Vosk (${effectiveSourceOpt.arabicName})…", 1, 3)
+        val allRecognized = mutableListOf<GeneratedSegment>()
+        var totalSpeechWindows = 0
+
+        val voskModel = try {
+            withContext(Dispatchers.IO) {
+                VoskEngineHelper.openModel(modelDir)
+            }
+        } catch (e: Exception) {
+            throw LocalVideoFallbackException(
+                "تعذر فتح نموذج الكلام المحلي للغة ${effectiveSourceOpt.arabicName}. أعد تنزيله من مركز الاستقلالية والأمان.",
+                e
             )
+        }
 
-            if (windows.isNotEmpty()) {
-                var preferOffline = SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+        try {
+            var macroOffsetUs = (resumeFromMs.coerceAtLeast(0L)) * 1000L
+            var macroIndex = 0
+
+            while (true) {
+                coroutineContext.ensureActive()
+                val batch = withContext(Dispatchers.IO) {
+                    decodeAudioBatchTo16kMono(
+                        context = context,
+                        uri = uri,
+                        startTimeUs = macroOffsetUs,
+                        maxBatchDurationUs = MACRO_WINDOW_DURATION_US
+                    )
+                } ?: break
+
+                macroIndex++
+                val windows = segmentActiveSpeechWindows(
+                    samples16k = batch.samples,
+                    baseOffsetMs = batch.actualStartMs
+                )
+                totalSpeechWindows += windows.size
+
                 windows.forEachIndexed { idx, window ->
+                    coroutineContext.ensureActive()
                     onStageUpdate(
-                        "التفريغ الصوتي المحلي (دفعة $macroIndex: مقطع ${idx + 1}/${windows.size})…",
+                        "التفريغ الصوتي بمحرك Vosk (${effectiveSourceOpt.arabicName} • دفعة $macroIndex: ${idx + 1}/${windows.size})…",
                         idx + 1,
                         windows.size
                     )
-                    val outcome = recognizePcmWindowApi33(
-                        context = context,
-                        window = window,
-                        languageTag = recognitionLangTag,
-                        preferOffline = preferOffline
-                    )
-                    if (outcome.shouldFallbackToSystemRecognizer && preferOffline) {
-                        preferOffline = false
-                        val retry = recognizePcmWindowApi33(
-                            context = context,
-                            window = window,
-                            languageTag = recognitionLangTag,
-                            preferOffline = false
-                        )
-                        if (!retry.text.isNullOrBlank()) {
-                            allRecognized.add(
-                                GeneratedSegment(
-                                    startMs = window.startMs,
-                                    endMs = window.endMs,
-                                    originalText = retry.text.trim(),
-                                    translatedText = retry.text.trim()
-                                )
-                            )
-                        } else if (retry.fatalErrorMessage != null && allRecognized.isEmpty()) {
-                            throw LocalVideoFallbackException(retry.fatalErrorMessage)
-                        }
-                    } else if (!outcome.text.isNullOrBlank()) {
-                        allRecognized.add(
-                            GeneratedSegment(
-                                startMs = window.startMs,
-                                endMs = window.endMs,
-                                originalText = outcome.text.trim(),
-                                translatedText = outcome.text.trim()
-                            )
-                        )
-                    } else if (outcome.fatalErrorMessage != null && allRecognized.isEmpty()) {
-                        throw LocalVideoFallbackException(outcome.fatalErrorMessage)
+                    val segments = withContext(Dispatchers.Default) {
+                        VoskEngineHelper.transcribePcmWindow(voskModel, window)
                     }
+                    allRecognized.addAll(segments)
                 }
-            }
 
-            if (batch.reachedEndOfTrack || batch.nextStartUs <= macroOffsetUs) {
-                break
+                if (batch.reachedEndOfTrack || batch.nextStartUs <= macroOffsetUs) {
+                    break
+                }
+                macroOffsetUs = batch.nextStartUs
             }
-            macroOffsetUs = batch.nextStartUs
+        } finally {
+            runCatching { voskModel.close() }
         }
 
         if (allRecognized.isEmpty()) {
-            throw LocalVideoFallbackException(
-                "لم يتمكن محرك الصوت المحلي من رصد كلام واضح في الفيديو. تأكد من تثبيت حزمة اللغة الصوتية على الجهاز أو استورد ملف SRT."
-            )
+            if (totalSpeechWindows == 0) {
+                throw LocalVideoFallbackException(
+                    "لم يتم رصد أي كلام منطوق أو صوت بشري واضح في المسار الصوتي للفيديو."
+                )
+            } else {
+                throw LocalVideoFallbackException(
+                    "تعذر استخراج كلمات واضحة بنموذج (${effectiveSourceOpt.arabicName}). تأكد من اختيار لغة المصدر المطابقة لكلام الفيديو أو استورد ملف SRT."
+                )
+            }
         }
 
-        onStageUpdate("جاري ترجمة النص المفرّغ محلياً عبر ML Kit…", allRecognized.size, allRecognized.size)
-        val detectedCode = resolveDetectedCodeFromText(
-            sampleText = allRecognized.take(6).joinToString(" ") { it.originalText },
-            requestedSource = if (sourceLanguage.code == SupportedLanguages.autoDetect.code) {
-                SupportedLanguages.findByCode(effectiveSourceCode)
-            } else {
-                sourceLanguage
-            }
+        // 5. Batch translate recognized segments locally using ML Kit
+        onStageUpdate(
+            "جاري ترجمة ${allRecognized.size} مقطعاً محلياً عبر ML Kit…",
+            allRecognized.size,
+            allRecognized.size
         )
 
         val translatedLines = offlineTranslator.translateBatch(
             lines = allRecognized.map { it.originalText },
-            sourceCode = detectedCode,
+            sourceCode = effectiveSourceCode,
             targetCode = targetLanguage.code
         )
 
         val finalSegments = allRecognized.mapIndexed { idx, seg ->
             seg.copy(translatedText = translatedLines.getOrElse(idx) { seg.originalText })
         }
-        val detectedOpt = SupportedLanguages.findByCode(detectedCode)
+
         return VideoTranslationResult(
-            detectedLanguageCode = detectedCode,
-            detectedLanguageNameArabic = "${detectedOpt.arabicName} (محلي)",
-            summary = "تم التفريغ الصوتي والترجمة محلياً على جهازك (${finalSegments.size} مقطعاً) بدون الاعتماد على السحابة.",
+            detectedLanguageCode = effectiveSourceCode,
+            detectedLanguageNameArabic = "${effectiveSourceOpt.arabicName} (Vosk محلي)",
+            summary = "تم التفريغ الصوتي بمحرك Vosk المستقل والترجمة محلياً عبر ML Kit (${finalSegments.size} مقطعاً).",
             segments = finalSegments
         )
+    }
+
+    private fun resolveVoskSourceLanguage(source: LanguageOption, target: LanguageOption): String {
+        if (source.code != SupportedLanguages.autoDetect.code) {
+            return source.code.lowercase()
+        }
+        voskModelManager.resolvePreferredInstalledLanguage(target.code)?.let { return it }
+        return if (target.code.equals("ar", ignoreCase = true)) "en" else "ar"
     }
 
     private suspend fun resolveDetectedCodeFromText(
@@ -222,164 +215,6 @@ class OnDeviceVideoTranscriber(
             offlineTranslator.detectLanguageCode(sampleText)
         } else {
             requestedSource.code
-        }
-    }
-
-    private data class RecognitionWindowOutcome(
-        val text: String? = null,
-        val fatalErrorMessage: String? = null,
-        val shouldFallbackToSystemRecognizer: Boolean = false
-    )
-
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    private suspend fun recognizePcmWindowApi33(
-        context: Context,
-        window: SpeechPcmWindow,
-        languageTag: String,
-        preferOffline: Boolean
-    ): RecognitionWindowOutcome = withContext(Dispatchers.Main.immediate) {
-        val windowDurationMs = (window.endMs - window.startMs).coerceAtLeast(800L)
-        val pipe = ParcelFileDescriptor.createPipe()
-        val readPfd = pipe[0]
-        val writePfd = pipe[1]
-
-        val recognizer = try {
-            if (preferOffline && SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) {
-                SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-            } else {
-                SpeechRecognizer.createSpeechRecognizer(context)
-            }
-        } catch (e: Exception) {
-            runCatching { readPfd.close() }
-            runCatching { writePfd.close() }
-            return@withContext RecognitionWindowOutcome(
-                fatalErrorMessage = "تعذر تشغيل محرك التعرف الصوتي المحلي على هذا الجهاز.",
-                shouldFallbackToSystemRecognizer = preferOffline
-            )
-        }
-
-        val feederJob = launch(Dispatchers.IO) {
-            try {
-                ParcelFileDescriptor.AutoCloseOutputStream(writePfd).use { out ->
-                    val chunkBytes = 3_200 // 100ms of 16kHz 16-bit mono PCM
-                    val data = window.pcm16kMonoBytes
-                    var offset = 0
-                    while (offset < data.size && isActive) {
-                        val toWrite = minOf(chunkBytes, data.size - offset)
-                        out.write(data, offset, toWrite)
-                        out.flush()
-                        offset += toWrite
-                        if (offset < data.size) {
-                            delay(92L)
-                        }
-                    }
-                    // Trailing 400ms silence helps the recognizer finalize the trailing words cleanly
-                    val trailingSilence = ByteArray(12_800)
-                    var sOff = 0
-                    while (sOff < trailingSilence.size && isActive) {
-                        val toWrite = minOf(chunkBytes, trailingSilence.size - sOff)
-                        out.write(trailingSilence, sOff, toWrite)
-                        out.flush()
-                        sOff += toWrite
-                        delay(80L)
-                    }
-                }
-            } catch (_: CancellationException) {
-                // normal cancellation
-            } catch (e: Exception) {
-                Log.w(TAG, "PCM pipe write ended early", e)
-            } finally {
-                runCatching { writePfd.close() }
-            }
-        }
-
-        try {
-            val outcome = withTimeoutOrNull(windowDurationMs + 9_000L) {
-                suspendCancellableCoroutine { cont ->
-                    recognizer.setRecognitionListener(object : RecognitionListener {
-                        override fun onReadyForSpeech(params: Bundle?) = Unit
-                        override fun onBeginningOfSpeech() = Unit
-                        override fun onRmsChanged(rmsdB: Float) = Unit
-                        override fun onBufferReceived(buffer: ByteArray?) = Unit
-                        override fun onEndOfSpeech() = Unit
-                        override fun onPartialResults(partialResults: Bundle?) = Unit
-                        override fun onEvent(eventType: Int, params: Bundle?) = Unit
-
-                        override fun onResults(results: Bundle?) {
-                            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            val best = matches?.firstOrNull()?.trim()
-                            if (cont.isActive) {
-                                cont.resume(RecognitionWindowOutcome(text = best))
-                            }
-                        }
-
-                        override fun onError(error: Int) {
-                            val result = when (error) {
-                                SpeechRecognizer.ERROR_NO_MATCH,
-                                SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
-                                    RecognitionWindowOutcome(text = null)
-
-                                SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
-                                SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
-                                SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT ->
-                                    RecognitionWindowOutcome(
-                                        fatalErrorMessage = "حزمة التعرف الصوتي للغة ($languageTag) غير مثبتة محلياً. ثبّتها من إعدادات الصوت في أندرويد أو استخدم ملف SRT.",
-                                        shouldFallbackToSystemRecognizer = true
-                                    )
-
-                                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
-                                    RecognitionWindowOutcome(
-                                        fatalErrorMessage = "يحتاج محرك الصوت المحلي إلى صلاحية الميكروفون من تبويب المترجم الصوتي أو الإعدادات."
-                                    )
-
-                                else ->
-                                    RecognitionWindowOutcome(
-                                        text = null,
-                                        shouldFallbackToSystemRecognizer = preferOffline
-                                    )
-                            }
-                            if (cont.isActive) cont.resume(result)
-                        }
-                    })
-
-                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
-                        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline)
-                        putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, readPfd)
-                        putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
-                        putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
-                        putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, TARGET_SAMPLE_RATE)
-                    }
-                    try {
-                        recognizer.startListening(intent)
-                    } catch (e: SecurityException) {
-                        if (cont.isActive) {
-                            cont.resume(
-                                RecognitionWindowOutcome(
-                                    fatalErrorMessage = "يرجى السماح بصلاحية الصوت لتشغيل التفريغ المحلي."
-                                )
-                            )
-                        }
-                    } catch (e: Exception) {
-                        if (cont.isActive) {
-                            cont.resume(
-                                RecognitionWindowOutcome(
-                                    text = null,
-                                    shouldFallbackToSystemRecognizer = true
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-            outcome ?: RecognitionWindowOutcome(text = null)
-        } finally {
-            feederJob.cancel()
-            runCatching { recognizer.cancel() }
-            runCatching { recognizer.destroy() }
-            runCatching { readPfd.close() }
-            runCatching { writePfd.close() }
         }
     }
 
@@ -590,30 +425,6 @@ class OnDeviceVideoTranscriber(
             runCatching { extractor.release() }
         }
     }
-
-    private fun resolveSpeechLanguageTag(source: LanguageOption, target: LanguageOption): String {
-        val code = if (source.code == SupportedLanguages.autoDetect.code) {
-            if (target.code == "ar") "en" else "ar"
-        } else {
-            source.code.lowercase()
-        }
-        return when (code) {
-            "ar" -> "ar-SA"
-            "en" -> "en-US"
-            "fr" -> "fr-FR"
-            "es" -> "es-ES"
-            "de" -> "de-DE"
-            "tr" -> "tr-TR"
-            "ja" -> "ja-JP"
-            "ko" -> "ko-KR"
-            "zh" -> "zh-CN"
-            "hi" -> "hi-IN"
-            "it" -> "it-IT"
-            "pt" -> "pt-BR"
-            "ru" -> "ru-RU"
-            else -> "en-US"
-        }
-    }
 }
 
 internal fun downmixAndResampleTo16kMono(
@@ -682,7 +493,7 @@ internal fun segmentActiveSpeechWindows(
 
     val maxRms = frameRms.maxOrNull() ?: 0.0
     if (maxRms < 60.0) return emptyList()
-    val threshold = minOf(280.0, maxOf(110.0, maxRms * 0.14))
+    val threshold = minOf(280.0, maxOf(100.0, maxRms * 0.12))
 
     val activeRanges = mutableListOf<IntRange>()
     var segStart = -1

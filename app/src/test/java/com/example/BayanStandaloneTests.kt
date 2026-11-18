@@ -3,13 +3,22 @@ package com.example
 import com.example.ai.extractErrorFromDummyToken
 import com.example.ai.isThrottleDetail
 import com.example.export.SubtitleParser
+import com.example.media.VoskCatalogItem
+import com.example.media.VoskTimedWord
 import com.example.media.downmixAndResampleTo16kMono
+import com.example.media.groupVoskWordsIntoSegments
+import com.example.media.isSafeZipDestination
+import com.example.media.parseVoskResultJson
 import com.example.media.segmentActiveSpeechWindows
+import com.example.media.selectBestCatalogModelForLanguage
+import com.example.media.stripTopArchiveDirectory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.sin
@@ -117,5 +126,77 @@ class BayanStandaloneTests {
         assertTrue(windows[0].endMs in 2_900L..3_300L)
         assertTrue(windows[1].startMs in 4_200L..4_600L)
         assertTrue(windows[1].endMs in 6_100L..6_500L)
+    }
+
+    @Test
+    fun parseVoskResultJson_extractsWordsAndTimings() {
+        val sampleJson = """
+            {
+              "result": [
+                {"conf": 0.98, "end": 0.62, "start": 0.15, "word": "hello"},
+                {"conf": 0.95, "end": 1.10, "start": 0.65, "word": "world"}
+              ],
+              "text": "hello world"
+            }
+        """.trimIndent()
+
+        val (text, words) = parseVoskResultJson(sampleJson)
+        assertEquals("hello world", text)
+        assertEquals(2, words.size)
+        assertEquals("hello", words[0].word)
+        assertEquals(0.15, words[0].start, 0.001)
+        assertEquals(1.10, words[1].end, 0.001)
+    }
+
+    @Test
+    fun groupVoskWordsIntoSegments_splitsOnPausesAndRebasesTimestamps() {
+        val words = listOf(
+            VoskTimedWord("welcome", start = 0.2, end = 0.7),
+            VoskTimedWord("back", start = 0.75, end = 1.1),
+            // 1.0s pause -> triggers cue split
+            VoskTimedWord("let", start = 2.1, end = 2.3),
+            VoskTimedWord("us", start = 2.35, end = 2.5),
+            VoskTimedWord("begin", start = 2.55, end = 3.0)
+        )
+
+        val segments = groupVoskWordsIntoSegments(
+            words = words,
+            fallbackText = "welcome back let us begin",
+            windowStartMs = 10_000L,
+            windowEndMs = 14_000L
+        )
+        assertEquals(2, segments.size)
+        assertEquals("welcome back", segments[0].originalText)
+        assertEquals(10_200L, segments[0].startMs)
+        assertEquals(11_100L, segments[0].endMs)
+        assertEquals("let us begin", segments[1].originalText)
+        assertEquals(12_100L, segments[1].startMs)
+        assertEquals(13_000L, segments[1].endMs)
+    }
+
+    @Test
+    fun selectBestCatalogModelForLanguage_prefersSmallNonObsoleteModels() {
+        val catalog = listOf(
+            VoskCatalogItem(lang = "en-us", name = "vosk-model-en-us-0.22", type = "big", size = 1_800_000_000, url = "https://alphacephei.com/vosk/models/big.zip", obsolete = "false"),
+            VoskCatalogItem(lang = "en-us", name = "vosk-model-small-en-us-0.15", type = "small", size = 40_000_000, url = "https://alphacephei.com/vosk/models/small.zip", obsolete = "false"),
+            VoskCatalogItem(lang = "ar", name = "vosk-model-small-ar-tn-0.1-linto", type = "small", size = 35_000_000, url = "https://alphacephei.com/vosk/models/ar-tn.zip", obsolete = "false"),
+            VoskCatalogItem(lang = "ar", name = "vosk-model-ar-mgb2-0.4", type = "big", size = 318_000_000, url = "https://alphacephei.com/vosk/models/ar-mgb2.zip", obsolete = "false")
+        )
+
+        val enBest = selectBestCatalogModelForLanguage(catalog, "en")
+        assertNotNull(enBest)
+        assertEquals("vosk-model-small-en-us-0.15", enBest?.name)
+
+        val arBest = selectBestCatalogModelForLanguage(catalog, "ar")
+        assertNotNull(arBest)
+        assertEquals("vosk-model-ar-mgb2-0.4", arBest?.name)
+    }
+
+    @Test
+    fun zipHelpers_stripTopFolderAndBlockPathTraversal() {
+        assertEquals("conf/mfcc.conf", stripTopArchiveDirectory("vosk-model-small-en-us-0.15/conf/mfcc.conf"))
+        val root = File("/tmp/bayan-vosk-test")
+        assertTrue(isSafeZipDestination(root, File(root, "conf/mfcc.conf")))
+        assertFalse(isSafeZipDestination(root, File(root, "../evil.sh")))
     }
 }

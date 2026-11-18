@@ -128,6 +128,9 @@ fun HomeScreen(
     val downloadedOfflinePacks by viewModel.downloadedOfflinePacks.collectAsStateWithLifecycle()
     val downloadingPackCode by viewModel.downloadingPackCode.collectAsStateWithLifecycle()
     val packActionError by viewModel.packActionError.collectAsStateWithLifecycle()
+    val downloadedVoskModels by viewModel.downloadedVoskModels.collectAsStateWithLifecycle()
+    val voskDownloadProgress by viewModel.voskDownloadProgress.collectAsStateWithLifecycle()
+    val voskActionError by viewModel.voskActionError.collectAsStateWithLifecycle()
     val view = LocalView.current
 
     val isActivelyProcessing = processingState is ProcessingUiState.ExtractingAudio ||
@@ -207,25 +210,31 @@ fun HomeScreen(
             }
             .padding(outerPadding)
     ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.TopCenter
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 680.dp)
+                .align(Alignment.TopCenter)
         ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 6.dp)
+            ) {
+                BayanTopHeader(
+                    offlineEngineMode = offlineEngineMode,
+                    appCheckStatus = appCheckStatus,
+                    onCloudBadgeClick = { showCloudInfoSheet = true }
+                )
+            }
+
             LazyColumn(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .widthIn(max = 680.dp),
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp)
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                item {
-                    BayanTopHeader(
-                        offlineEngineMode = offlineEngineMode,
-                        appCheckStatus = appCheckStatus,
-                        onCloudBadgeClick = { showCloudInfoSheet = true }
-                    )
-                }
-
                 item {
                     HeroTranslationStudioCard(
                         sourceLanguage = sourceLanguage,
@@ -327,12 +336,19 @@ fun HomeScreen(
             downloadedOfflinePacks = downloadedOfflinePacks,
             downloadingPackCode = downloadingPackCode,
             packActionError = packActionError,
+            voskCatalog = viewModel.voskCatalog,
+            downloadedVoskModels = downloadedVoskModels,
+            voskDownloadProgress = voskDownloadProgress,
+            voskActionError = voskActionError,
             securityReport = viewModel.securityReport,
             onToggleOfflineMode = { viewModel.setOfflineEngineMode(it) },
             onRunAppCheckDiagnostics = { viewModel.runAppCheckDiagnostics() },
             onDownloadPack = { viewModel.downloadOfflinePack(it) },
             onDeletePack = { viewModel.deleteOfflinePack(it) },
             onDismissPackError = { viewModel.dismissPackError() },
+            onDownloadVoskModel = { viewModel.downloadVoskModel(it) },
+            onDeleteVoskModel = { viewModel.deleteVoskModel(it) },
+            onDismissVoskError = { viewModel.dismissVoskError() },
             onDismiss = { showCloudInfoSheet = false }
         )
     }
@@ -432,8 +448,9 @@ private fun BayanTopHeader(
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
+                val ver = stringResource(R.string.version_badge)
                 Text(
-                    text = if (offlineEngineMode) "محلي مستقل • v3.1" else stringResource(R.string.cloud_status_badge),
+                    text = if (offlineEngineMode) "محلي مستقل • $ver" else stringResource(R.string.cloud_status_badge),
                     style = MaterialTheme.typography.labelMedium,
                     color = SilverPure
                 )
@@ -472,8 +489,8 @@ private fun HeroTranslationStudioCard(
                         )
                     )
                 )
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -917,7 +934,7 @@ private fun ErrorBannerCard(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = "فحص App Check أو تفعيل الوضع المحلي الأوفلاين",
+                    text = "إدارة نماذج Vosk المحلية أو فحص App Check",
                     style = MaterialTheme.typography.labelMedium,
                     color = SilverPure
                 )

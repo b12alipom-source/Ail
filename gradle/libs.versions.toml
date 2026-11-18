@@ -44,11 +44,15 @@ media3 = "1.11.1"
 kotlinxSerializationJson = "1.8.0"
 mlkitTranslate = "17.0.3"
 mlkitLanguageId = "17.0.6"
+voskAndroid = "0.3.75"
+jna = "5.18.1"
 
 
 [libraries]
 mlkit-translate = { group = "com.google.mlkit", name = "translate", version.ref = "mlkitTranslate" }
 mlkit-language-id = { group = "com.google.mlkit", name = "language-id", version.ref = "mlkitLanguageId" }
+vosk-android = { group = "com.alphacephei", name = "vosk-android", version.ref = "voskAndroid" }
+jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }

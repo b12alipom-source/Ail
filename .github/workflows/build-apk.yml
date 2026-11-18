@@ -121,32 +121,32 @@ jobs:
 
       - name: Package APK & AAB with SHA-256 verification
         run: |
-          cp app/build/outputs/apk/release/app-release.apk Bayan-v3.1.apk
-          cp app/build/outputs/bundle/release/app-release.aab Bayan-v3.1.aab
-          APK_SHA256=$(sha256sum Bayan-v3.1.apk | awk '{print $1}')
+          cp app/build/outputs/apk/release/app-release.apk Bayan-v3.2.apk
+          cp app/build/outputs/bundle/release/app-release.aab Bayan-v3.2.aab
+          APK_SHA256=$(sha256sum Bayan-v3.2.apk | awk '{print $1}')
           echo "APK_SHA256=${APK_SHA256}" >> "$GITHUB_ENV"
 
       - name: Publish APK and AAB to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v3.1
-          name: Bayan V3.1 (App Check Cooldown + On-Device Video Fallback)
+          tag_name: v3.2
+          name: Bayan V3.2 (Embedded Vosk Offline Speech + ML Kit)
           body: |
-            تطبيق بيان v3.1 — الاستقلالية الكاملة ومعالجة حظر التحقق:
-            - إصلاح جذري لخطأ `App Check: Too many attempts` بمنع التكرار الإجباري وإضافة تهدئة ذكية.
-            - تحويل تلقائي لتفريغ صوت الفيديو وترجمته محلياً على الجهاز (Embedded Subtitles + PCM Speech + ML Kit) عند تعذر السحابة.
-            - دعم كامل للترجمة الأوفلاين 100% للنصوص والصوت وملفات SRT/VTT مع خدمة خلفية مستمرة.
+            تطبيق بيان v3.2 — محرك Vosk المستقل لتفريغ الفيديو والصوت أوفلاين:
+            - تضمين محرك Vosk المستقل (`vosk-android`) داخل التطبيق للتفريغ الصوتي المحلي للفيديو والمايك بدون الاعتماد على خدمات النظام.
+            - إدارة وتنزيل نماذج الكلام لكل لغة مع مزامنة دقيقة على مستوى الكلمات والترجمة عبر ML Kit.
+            - تحسين تباعد الشريط العلوي على الأجهزة اللوحية (التابلت) واستقرار التحويل التلقائي المحلي عند حظر App Check.
             - نوع التوقيع: ${{ env.KEYSTORE_MODE }}
             - بصمة شهادة التطبيق (SHA-256): `${{ env.CERT_SHA256 }}`
             - بصمة ملف APK (SHA-256): `${{ env.APK_SHA256 }}`
           files: |
-            Bayan-v3.1.apk
-            Bayan-v3.1.aab
+            Bayan-v3.2.apk
+            Bayan-v3.2.aab
 
       - name: Upload APK and AAB artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Bayan-v3.1-Artifacts
+          name: Bayan-v3.2-Artifacts
           path: |
-            Bayan-v3.1.apk
-            Bayan-v3.1.aab
+            Bayan-v3.2.apk
+            Bayan-v3.2.aab
