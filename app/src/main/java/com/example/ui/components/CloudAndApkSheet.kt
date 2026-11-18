@@ -47,6 +47,11 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -59,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.ai.AppCheckDiagnosticState
+import kotlinx.coroutines.delay
 import com.example.data.SupportedLanguages
 import com.example.security.SecurityAuditReport
 import com.example.ui.theme.CoralError
@@ -165,6 +171,26 @@ fun CloudAndApkSheet(
             }
 
             // 2. Live App Check & Cloud Engine Diagnostics
+            var cooldownRemainingSec by remember(appCheckStatus) {
+                mutableIntStateOf(
+                    if (appCheckStatus is AppCheckDiagnosticState.RateLimited) {
+                        ((appCheckStatus.cooldownUntilMs - System.currentTimeMillis()).coerceAtLeast(0L) / 1000L).toInt()
+                    } else 0
+                )
+            }
+            LaunchedEffect(appCheckStatus) {
+                if (appCheckStatus is AppCheckDiagnosticState.RateLimited) {
+                    while (true) {
+                        val rem = ((appCheckStatus.cooldownUntilMs - System.currentTimeMillis()).coerceAtLeast(0L) / 1000L).toInt()
+                        cooldownRemainingSec = rem
+                        if (rem <= 0) break
+                        delay(1000L)
+                    }
+                } else {
+                    cooldownRemainingSec = 0
+                }
+            }
+
             val (statusIcon, statusTint, statusTitle, statusDesc) = when (appCheckStatus) {
                 is AppCheckDiagnosticState.Verified -> QuadInfo(
                     Icons.Outlined.VerifiedUser,
@@ -177,14 +203,29 @@ fun CloudAndApkSheet(
                     Icons.Outlined.CloudDone,
                     IceSapphireGlow,
                     "جاري تجهيز التحقق السحابي (App Check)",
-                    "يمكنك تشغيل فحص التحقق الآن أو استخدام الوضع المحلي أوفلاين في أي لحظة."
+                    "يمكنك تشغيل فحص التحقق الآن أو الاعتماد على التحويل التلقائي للترجمة المحلية."
+                )
+
+                is AppCheckDiagnosticState.RateLimited -> QuadInfo(
+                    Icons.Outlined.WarningAmber,
+                    CoralError,
+                    if (cooldownRemainingSec > 0) {
+                        "تهدئة حماية من الحظر (${cooldownRemainingSec} ث)"
+                    } else {
+                        "انتهت فترة التهدئة (${appCheckStatus.providerName})"
+                    },
+                    if (cooldownRemainingSec > 0) {
+                        "تم إيقاف طلبات App Check مؤقتاً لمنع تكرار «Too many attempts». أثناء ذلك يعمل التحويل التلقائي المحلي للفيديوهات والنصوص بشكل طبيعي."
+                    } else {
+                        "يمكنك إعادة فحص التحقق الآن أو الاستمرار بالوضع المحلي الأوفلاين."
+                    }
                 )
 
                 is AppCheckDiagnosticState.AttentionNeeded -> QuadInfo(
                     Icons.Outlined.WarningAmber,
                     CoralError,
                     "تعذر التحقق السحابي (${appCheckStatus.providerName})",
-                    "السبب التقني: ${appCheckStatus.reason}\nتأكد من ضبط التاريخ والوقت تلقائياً وإيقاف VPN، أو اعتمد على الوضع المحلي أوفلاين."
+                    "السبب التقني: ${appCheckStatus.reason}\nسيتم التحويل تلقائياً للتفريغ والترجمة المحلية عند اختيار فيديو، أو يمكنك تفعيل الوضع المحلي بالكامل."
                 )
             }
 
@@ -221,9 +262,10 @@ fun CloudAndApkSheet(
                         }
                     }
 
+                    val inCooldown = appCheckStatus is AppCheckDiagnosticState.RateLimited && cooldownRemainingSec > 0
                     OutlinedButton(
                         onClick = onRunAppCheckDiagnostics,
-                        enabled = !isCheckingAppCheck,
+                        enabled = !isCheckingAppCheck && !inCooldown,
                         border = BorderStroke(1.dp, MidnightBorder),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -237,7 +279,16 @@ fun CloudAndApkSheet(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("جاري فحص وتجديد التحقق…", color = SilverPure)
+                            Text("جاري فحص التحقق…", color = SilverPure)
+                        } else if (inCooldown) {
+                            Icon(
+                                imageVector = Icons.Outlined.WarningAmber,
+                                contentDescription = null,
+                                tint = CoralError,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("انتظر ${cooldownRemainingSec} ث لإعادة الفحص بأمان", color = SilverMetallic)
                         } else {
                             Icon(
                                 imageVector = Icons.Outlined.Refresh,
@@ -246,7 +297,7 @@ fun CloudAndApkSheet(
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("فحص وتجديد تحقق App Check الآن", color = SilverPure)
+                            Text("فحص تحقق App Check الآن", color = SilverPure)
                         }
                     }
                 }

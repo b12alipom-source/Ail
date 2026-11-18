@@ -10,6 +10,7 @@ import com.example.ai.AppCheckDiagnosticState
 import com.example.ai.GeminiVideoTranslator
 import com.example.ai.OfflineTranslationEngine
 import com.example.ai.appCheckDiagnosticState
+import com.example.ai.isAppCheckRateLimited
 import com.example.ai.verifyOrRefreshAppCheckToken
 import com.example.data.GeneratedSegment
 import com.example.data.LanguageOption
@@ -25,8 +26,10 @@ import com.example.data.db.VideoProjectEntity
 import com.example.data.db.VoiceTranslationEntity
 import com.example.export.SubtitleParser
 import com.example.media.AudioExtractor
+import com.example.media.LocalVideoFallbackException
 import com.example.media.MediaPreparationException
 import com.example.media.OfflineSpeechHelper
+import com.example.media.OnDeviceVideoTranscriber
 import com.example.media.VoiceRecorder
 import com.example.security.SecurityAuditReport
 import com.example.security.SecurityInspector
@@ -54,7 +57,9 @@ sealed interface ProcessingUiState {
         val fileName: String,
         val targetLanguageName: String,
         val currentChunk: Int,
-        val totalChunks: Int
+        val totalChunks: Int,
+        val isOfflineFallback: Boolean = false,
+        val statusDetail: String? = null
     ) : ProcessingUiState
 
     data class Error(val message: String) : ProcessingUiState
@@ -96,6 +101,10 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
 
     private val offlineTranslator: OfflineTranslationEngine by lazy {
         OfflineTranslationEngine()
+    }
+
+    private val onDeviceVideoTranscriber: OnDeviceVideoTranscriber by lazy {
+        OnDeviceVideoTranscriber(getApplication(), offlineTranslator)
     }
 
     private val voiceRecorder: VoiceRecorder by lazy {
@@ -230,7 +239,9 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isCheckingAppCheck.value = true
             try {
-                verifyOrRefreshAppCheckToken(forceRefresh = true, maxAttempts = 2)
+                // If already inside a throttle cooldown, verifyOrRefreshAppCheckToken returns immediately without hitting network
+                val shouldForce = !isAppCheckRateLimited()
+                verifyOrRefreshAppCheckToken(forceRefresh = shouldForce)
             } finally {
                 _isCheckingAppCheck.value = false
             }
@@ -266,9 +277,41 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
             TranslationKeepAliveService.updateProgress(
                 context = appContext,
                 title = "بيان يجهز الفيديو",
-                status = "جاري استخلاص المسار الصوتي…"
+                status = "جاري تجهيز المسار الصوتي…"
             )
             try {
+                val (initialTitle, initialDurationMs) = withContext(Dispatchers.IO) {
+                    AudioExtractor.resolveTitleAndDuration(appContext, uri)
+                }
+
+                // If user enabled 100% Offline Mode or App Check is currently in cooldown, jump directly to on-device transcription
+                if (_offlineEngineMode.value || isAppCheckRateLimited()) {
+                    val reasonLabel = if (_offlineEngineMode.value) {
+                        "الوضع المحلي المستقل مفعّل"
+                    } else {
+                        "التحويل التلقائي للترجمة المحلية (حماية من حظر App Check)"
+                    }
+                    Log.i(TAG, "Starting video directly with on-device engine: $reasonLabel")
+                    val localResult = runOnDeviceVideoPipeline(
+                        uri = uri,
+                        title = initialTitle,
+                        sourceLanguage = chosenSource,
+                        targetLanguage = chosenTarget,
+                        resumeFromMs = 0L,
+                        reasonBanner = reasonLabel
+                    )
+                    val savedId = repository.saveTranslationProject(
+                        title = initialTitle,
+                        videoUri = uri.toString(),
+                        durationMs = initialDurationMs,
+                        targetLanguage = chosenTarget,
+                        result = localResult
+                    )
+                    _processingState.value = ProcessingUiState.Idle
+                    onCompleted(savedId)
+                    return@launch
+                }
+
                 val payload = AudioExtractor.prepareChunkedForTranslation(appContext, uri)
                 val totalChunks = payload.chunks.size
                 val mergedSegments = mutableListOf<GeneratedSegment>()
@@ -276,13 +319,15 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                 var detectedNameAr = chosenSource.arabicName
                 var combinedSummary = ""
                 var previousContext = ""
+                var switchedToLocalFallback = false
 
-                payload.chunks.forEachIndexed { index, chunk ->
+                for ((index, chunk) in payload.chunks.withIndex()) {
                     _processingState.value = ProcessingUiState.Translating(
                         fileName = payload.title,
                         targetLanguageName = chosenTarget.arabicName,
                         currentChunk = index + 1,
-                        totalChunks = totalChunks
+                        totalChunks = totalChunks,
+                        isOfflineFallback = false
                     )
                     TranslationKeepAliveService.updateProgress(
                         context = appContext,
@@ -296,40 +341,80 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                         max = totalChunks
                     )
 
-                    val chunkResult = translator.transcribeAndTranslateChunk(
-                        mediaBytes = chunk.bytes,
-                        mimeType = chunk.mimeType,
-                        chunkDurationMs = chunk.durationMs,
-                        startOffsetMs = chunk.startOffsetMs,
-                        sourceLanguage = chosenSource,
-                        targetLanguage = chosenTarget,
-                        translationStyle = chosenStyle,
-                        previousContext = previousContext,
-                        allowEmptySegments = totalChunks > 1
-                    )
+                    val chunkOutcome = try {
+                        Result.success(
+                            translator.transcribeAndTranslateChunk(
+                                mediaBytes = chunk.bytes,
+                                mimeType = chunk.mimeType,
+                                chunkDurationMs = chunk.durationMs,
+                                startOffsetMs = chunk.startOffsetMs,
+                                sourceLanguage = chosenSource,
+                                targetLanguage = chosenTarget,
+                                translationStyle = chosenStyle,
+                                previousContext = previousContext,
+                                allowEmptySegments = totalChunks > 1
+                            )
+                        )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Result.failure(e)
+                    }
 
-                    if (index == 0) {
-                        detectedCode = chunkResult.detectedLanguageCode
-                        detectedNameAr = chunkResult.detectedLanguageNameArabic
-                    }
-                    if (chunkResult.summary.isNotBlank()) {
-                        combinedSummary = if (combinedSummary.isBlank()) {
-                            chunkResult.summary
-                        } else {
-                            "$combinedSummary ${chunkResult.summary}"
+                    if (chunkOutcome.isSuccess) {
+                        val chunkResult = chunkOutcome.getOrThrow()
+                        if (index == 0) {
+                            detectedCode = chunkResult.detectedLanguageCode
+                            detectedNameAr = chunkResult.detectedLanguageNameArabic
                         }
-                    }
-                    if (chunkResult.segments.isNotEmpty()) {
-                        val trailing = chunkResult.segments.takeLast(2)
-                        previousContext = trailing.joinToString("\n") { seg ->
-                            "- \"${seg.originalText}\" -> \"${seg.translatedText}\""
+                        if (chunkResult.summary.isNotBlank()) {
+                            combinedSummary = if (combinedSummary.isBlank()) {
+                                chunkResult.summary
+                            } else {
+                                "$combinedSummary ${chunkResult.summary}"
+                            }
                         }
+                        if (chunkResult.segments.isNotEmpty()) {
+                            val trailing = chunkResult.segments.takeLast(2)
+                            previousContext = trailing.joinToString("\n") { seg ->
+                                "- \"${seg.originalText}\" -> \"${seg.translatedText}\""
+                            }
+                        }
+                        mergedSegments.addAll(chunkResult.segments)
+                    } else {
+                        val cloudErr = chunkOutcome.exceptionOrNull()!!
+                        if (!isCloudFallbackEligible(cloudErr)) {
+                            throw cloudErr
+                        }
+                        Log.w(TAG, "Cloud chunk $index failed; switching automatically to on-device transcription", cloudErr)
+                        switchedToLocalFallback = true
+                        val resumeMs = mergedSegments.maxOfOrNull { it.endMs } ?: 0L
+                        val localPart = runOnDeviceVideoPipeline(
+                            uri = uri,
+                            title = payload.title,
+                            sourceLanguage = chosenSource,
+                            targetLanguage = chosenTarget,
+                            resumeFromMs = resumeMs,
+                            reasonBanner = "تعذر الاتصال السحابي — تم التحويل التلقائي للتفريغ والترجمة محلياً على جهازك"
+                        )
+                        if (mergedSegments.isEmpty()) {
+                            detectedCode = localPart.detectedLanguageCode
+                            detectedNameAr = localPart.detectedLanguageNameArabic
+                            combinedSummary = localPart.summary
+                        } else if (combinedSummary.isBlank()) {
+                            combinedSummary = localPart.summary
+                        }
+                        mergedSegments.addAll(localPart.segments)
+                        break
                     }
-                    mergedSegments.addAll(chunkResult.segments)
                 }
 
                 if (mergedSegments.isEmpty()) {
-                    throw IllegalStateException("لم يتم رصد أي كلام منطوق واضح في هذا المقطع.")
+                    if (!switchedToLocalFallback) {
+                        throw IllegalStateException("لم يتم رصد أي كلام منطوق واضح في هذا المقطع.")
+                    } else {
+                        throw IllegalStateException("لم يتم رصد كلام واضح في الفيديو. يمكنك استيراد ملف SRT أو المحاولة لاحقاً.")
+                    }
                 }
 
                 val mergedResult = VideoTranslationResult(
@@ -357,6 +442,11 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                 _processingState.value = ProcessingUiState.Error(
                     e.message ?: "تعذر تجهيز ملف الفيديو."
                 )
+            } catch (e: LocalVideoFallbackException) {
+                Log.e(TAG, "Local video fallback error", e)
+                _processingState.value = ProcessingUiState.Error(
+                    e.message ?: "تعذر التفريغ الصوتي المحلي لهذا الفيديو."
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "Video translation failed", e)
                 _processingState.value = ProcessingUiState.Error(
@@ -366,6 +456,78 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                 TranslationKeepAliveService.stop(appContext)
             }
         }
+    }
+
+    private suspend fun runOnDeviceVideoPipeline(
+        uri: Uri,
+        title: String,
+        sourceLanguage: LanguageOption,
+        targetLanguage: LanguageOption,
+        resumeFromMs: Long,
+        reasonBanner: String
+    ): VideoTranslationResult {
+        val appContext = getApplication<Application>()
+        _processingState.value = ProcessingUiState.Translating(
+            fileName = title,
+            targetLanguageName = targetLanguage.arabicName,
+            currentChunk = 1,
+            totalChunks = 1,
+            isOfflineFallback = true,
+            statusDetail = reasonBanner
+        )
+        TranslationKeepAliveService.updateProgress(
+            context = appContext,
+            title = title,
+            status = "التفريغ والترجمة المحلية جارية…"
+        )
+        val result = onDeviceVideoTranscriber.transcribeAndTranslateLocally(
+            uri = uri,
+            sourceLanguage = sourceLanguage,
+            targetLanguage = targetLanguage,
+            resumeFromMs = resumeFromMs
+        ) { stageText, current, total ->
+            _processingState.value = ProcessingUiState.Translating(
+                fileName = title,
+                targetLanguageName = targetLanguage.arabicName,
+                currentChunk = current.coerceAtLeast(1),
+                totalChunks = total.coerceAtLeast(1),
+                isOfflineFallback = true,
+                statusDetail = stageText
+            )
+            TranslationKeepAliveService.updateProgress(
+                context = appContext,
+                title = title,
+                status = stageText,
+                progress = current,
+                max = total
+            )
+        }
+        refreshOfflinePacks()
+        return result
+    }
+
+    private fun isCloudFallbackEligible(error: Throwable): Boolean {
+        if (error is GeminiVideoTranslator.AppCheckVerificationException ||
+            error.cause is GeminiVideoTranslator.AppCheckVerificationException
+        ) {
+            return true
+        }
+        val msg = (error.message ?: error.localizedMessage ?: "").lowercase()
+        return msg.contains("app check") ||
+            msg.contains("appcheck") ||
+            msg.contains("too many attempts") ||
+            msg.contains("attestation") ||
+            msg.contains("التحقق الأمني") ||
+            msg.contains("رمز الأمان") ||
+            msg.contains("الاتصال بالإنترنت") ||
+            msg.contains("مزدحم مؤقتاً") ||
+            msg.contains("استغرقت معالجة هذا الجزء وقتاً") ||
+            msg.contains("network") ||
+            msg.contains("unable to resolve host") ||
+            msg.contains("timeout") ||
+            msg.contains("403") ||
+            msg.contains("429") ||
+            msg.contains("503")
     }
 
     fun importAndTranslateSubtitleFile(uri: Uri, onCompleted: (Long) -> Unit) {
@@ -502,7 +664,10 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         ) return
 
         _voiceNotice.value = null
-        if (_offlineEngineMode.value) {
+        if (_offlineEngineMode.value || isAppCheckRateLimited()) {
+            if (!_offlineEngineMode.value) {
+                _voiceNotice.value = "التحقق السحابي في فترة تهدئة — تم التحويل تلقائياً للإملاء والترجمة المحلية."
+            }
             startOfflineSpeechDictation()
             return
         }

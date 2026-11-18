@@ -497,7 +497,7 @@ class GeminiVideoTranslator {
         }
     }
 
-    private class AppCheckVerificationException(val detail: String) :
+    class AppCheckVerificationException(val detail: String, val isRateLimited: Boolean = false) :
         IllegalStateException("App Check attestation failed: $detail")
 
     private suspend fun generateWithFallback(
@@ -505,13 +505,21 @@ class GeminiVideoTranslator {
         fallbackModel: GenerativeModel,
         call: suspend (GenerativeModel) -> GenerateContentResponse
     ): GenerateContentResponse {
-        val preflight = verifyOrRefreshAppCheckToken(forceRefresh = false, maxAttempts = 2)
+        if (isAppCheckRateLimited()) {
+            val sec = remainingAppCheckCooldownSec()
+            throw AppCheckVerificationException(
+                detail = "Too many attempts (انتظار تهدئة ${sec} ث)",
+                isRateLimited = true
+            )
+        }
+
+        // Single passive cache-first App Check check; never forceRefresh = true automatically
+        val preflight = verifyOrRefreshAppCheckToken(forceRefresh = false)
         if (preflight is AppCheckTokenOutcome.Failed) {
-            Log.w(TAG, "App Check preflight failed: ${preflight.detail}")
-            val secondTry = verifyOrRefreshAppCheckToken(forceRefresh = true, maxAttempts = 2)
-            if (secondTry is AppCheckTokenOutcome.Failed) {
-                throw AppCheckVerificationException(secondTry.detail)
-            }
+            throw AppCheckVerificationException(
+                detail = preflight.detail,
+                isRateLimited = preflight.isRateLimited
+            )
         }
 
         try {
@@ -522,22 +530,13 @@ class GeminiVideoTranslator {
             return withTimeout(AI_TIMEOUT_MS) { call(fallbackModel) }
         } catch (e: Exception) {
             if (isAppCheckError(e)) {
-                Log.w(TAG, "App Check token rejected by backend, forcing fresh token and retrying", e)
-                val refreshOutcome = verifyOrRefreshAppCheckToken(forceRefresh = true, maxAttempts = 2)
-                if (refreshOutcome is AppCheckTokenOutcome.Failed) {
-                    throw AppCheckVerificationException(refreshOutcome.detail)
+                val msg = e.message ?: e.localizedMessage ?: "App Check error"
+                if (isThrottleDetail(msg)) {
+                    markAppCheckRateLimited(msg)
+                    throw AppCheckVerificationException(detail = msg, isRateLimited = true)
                 }
-                delay(700L)
-                return try {
-                    withTimeout(AI_TIMEOUT_MS) { call(primaryModel) }
-                } catch (retryErr: Exception) {
-                    if (isAppCheckError(retryErr) || isTransientCapacityError(retryErr)) {
-                        delay(800L)
-                        withTimeout(AI_TIMEOUT_MS) { call(fallbackModel) }
-                    } else {
-                        throw retryErr
-                    }
-                }
+                Log.w(TAG, "App Check rejected request; avoiding aggressive retry loop", e)
+                throw AppCheckVerificationException(detail = msg, isRateLimited = false)
             }
             if (!isTransientCapacityError(e)) throw e
             Log.w(TAG, "Primary model $PRIMARY_MODEL_NAME under high demand, falling back to $FALLBACK_MODEL_NAME", e)
@@ -548,9 +547,9 @@ class GeminiVideoTranslator {
                 throw fallbackErr
             } catch (fallbackErr: Exception) {
                 if (isAppCheckError(fallbackErr)) {
-                    verifyOrRefreshAppCheckToken(forceRefresh = true, maxAttempts = 2)
-                    delay(700L)
-                    return withTimeout(AI_TIMEOUT_MS) { call(fallbackModel) }
+                    val msg = fallbackErr.message ?: fallbackErr.localizedMessage ?: "App Check error"
+                    if (isThrottleDetail(msg)) markAppCheckRateLimited(msg)
+                    throw AppCheckVerificationException(detail = msg, isRateLimited = isThrottleDetail(msg))
                 }
                 if (!isTransientCapacityError(fallbackErr)) throw fallbackErr
                 Log.w(TAG, "Fallback model also busy, retrying once after brief delay", fallbackErr)
@@ -563,7 +562,10 @@ class GeminiVideoTranslator {
     private fun isAppCheckError(e: Throwable): Boolean {
         if (e is AppCheckVerificationException) return true
         val msg = (e.message ?: e.localizedMessage ?: "").lowercase()
-        return msg.contains("app check") || msg.contains("appcheck") || msg.contains("attestation")
+        return msg.contains("app check") ||
+            msg.contains("appcheck") ||
+            msg.contains("attestation") ||
+            msg.contains("too many attempts")
     }
 
     private fun isTransientCapacityError(e: Throwable): Boolean {

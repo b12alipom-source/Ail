@@ -421,6 +421,7 @@ private fun BayanTopHeader(
             ) {
                 val (badgeIcon, badgeColor) = when {
                     offlineEngineMode -> Icons.Outlined.CloudOff to EmeraldSuccess
+                    appCheckStatus is AppCheckDiagnosticState.RateLimited -> Icons.Outlined.CloudOff to CoralError
                     appCheckStatus is AppCheckDiagnosticState.AttentionNeeded -> Icons.Outlined.VerifiedUser to IceSapphireGlow
                     else -> Icons.Outlined.CloudDone to EmeraldSuccess
                 }
@@ -432,7 +433,7 @@ private fun BayanTopHeader(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = if (offlineEngineMode) "محلي مستقل • v3.0" else stringResource(R.string.cloud_status_badge),
+                    text = if (offlineEngineMode) "محلي مستقل • v3.1" else stringResource(R.string.cloud_status_badge),
                     style = MaterialTheme.typography.labelMedium,
                     color = SilverPure
                 )
@@ -944,7 +945,9 @@ private fun ProcessingOverlay(
     val stageMessage = when (state) {
         is ProcessingUiState.ExtractingAudio -> stringResource(R.string.processing_extracting)
         is ProcessingUiState.Translating -> {
-            if (state.totalChunks > 1) {
+            if (!state.statusDetail.isNullOrBlank()) {
+                state.statusDetail
+            } else if (state.totalChunks > 1) {
                 "جاري تفريغ وترجمة الجزء ${state.currentChunk} من ${state.totalChunks} إلى ${state.targetLanguageName}…"
             } else {
                 "جاري التفريغ والترجمة الفورية إلى ${state.targetLanguageName}…"

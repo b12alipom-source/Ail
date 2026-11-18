@@ -11,7 +11,6 @@ import com.google.firebase.appcheck.recaptcha.RecaptchaAppCheckProviderFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,15 +30,22 @@ private const val DEBUG_STORE_PREFIX = "com.google.firebase.appcheck.debug.store
 private const val DEBUG_SECRET_KEY = "com.google.firebase.appcheck.debug.DEBUG_SECRET"
 private const val RECAPTCHA_SITE_KEY_RES = "recaptcha_site_key"
 
+private const val THROTTLE_COOLDOWN_MS = 90_000L
+
 sealed interface AppCheckDiagnosticState {
     data object Initializing : AppCheckDiagnosticState
     data class Verified(val expiresAtMs: Long, val providerName: String) : AppCheckDiagnosticState
     data class AttentionNeeded(val reason: String, val providerName: String) : AppCheckDiagnosticState
+    data class RateLimited(
+        val cooldownUntilMs: Long,
+        val providerName: String,
+        val reason: String
+    ) : AppCheckDiagnosticState
 }
 
 sealed interface AppCheckTokenOutcome {
     data class Valid(val token: String, val expiresAtMs: Long) : AppCheckTokenOutcome
-    data class Failed(val detail: String) : AppCheckTokenOutcome
+    data class Failed(val detail: String, val isRateLimited: Boolean = false) : AppCheckTokenOutcome
 }
 
 @Volatile
@@ -47,6 +53,9 @@ private var appCheckFactoryInstalled = false
 
 @Volatile
 private var installedProviderLabel = if (BuildConfig.DEBUG) "Debug Provider" else "reCAPTCHA Enterprise"
+
+@Volatile
+private var throttleCooldownUntilMs: Long = 0L
 
 private val appCheckMutex = Mutex()
 private val warmUpScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -126,43 +135,87 @@ fun configureAppCheck(context: Context, intent: Intent?) {
     }
 }
 
+fun isAppCheckRateLimited(nowMs: Long = System.currentTimeMillis()): Boolean {
+    return nowMs < throttleCooldownUntilMs
+}
+
+fun remainingAppCheckCooldownSec(nowMs: Long = System.currentTimeMillis()): Int {
+    val diff = throttleCooldownUntilMs - nowMs
+    return if (diff <= 0L) 0 else ((diff + 999L) / 1000L).toInt()
+}
+
+fun markAppCheckRateLimited(reason: String) {
+    val now = System.currentTimeMillis()
+    val cooldownUntil = now + THROTTLE_COOLDOWN_MS
+    throttleCooldownUntilMs = maxOf(throttleCooldownUntilMs, cooldownUntil)
+    _appCheckDiagnosticState.value = AppCheckDiagnosticState.RateLimited(
+        cooldownUntilMs = throttleCooldownUntilMs,
+        providerName = installedProviderLabel,
+        reason = reason.ifBlank { "Too many attempts" }
+    )
+}
+
+fun isThrottleDetail(detail: String): Boolean {
+    val lower = detail.lowercase()
+    return lower.contains("too many attempts") ||
+        lower.contains("too_many_attempts") ||
+        lower.contains("throttl") ||
+        lower.contains("quota") ||
+        lower.contains("429")
+}
+
 fun warmUpAppCheckAsync() {
     warmUpScope.launch {
-        verifyOrRefreshAppCheckToken(forceRefresh = false, maxAttempts = 2)
+        // Passive cache-first check only; never force refresh at launch
+        verifyOrRefreshAppCheckToken(forceRefresh = false)
     }
 }
 
 suspend fun verifyOrRefreshAppCheckToken(
-    forceRefresh: Boolean,
-    maxAttempts: Int = 2
+    forceRefresh: Boolean
 ): AppCheckTokenOutcome = appCheckMutex.withLock {
-    var lastErrorDetail = "تعذر الحصول على رمز تحقق صالح."
-    for (attempt in 1..maxAttempts.coerceAtLeast(1)) {
-        val shouldForce = forceRefresh || attempt > 1
-        val outcome = requestSingleToken(shouldForce)
-        if (outcome is AppCheckTokenOutcome.Valid) {
+    val now = System.currentTimeMillis()
+    if (now < throttleCooldownUntilMs) {
+        val remain = remainingAppCheckCooldownSec(now)
+        val msg = "Too many attempts (انتظار تهدئة ${remain} ث)"
+        _appCheckDiagnosticState.value = AppCheckDiagnosticState.RateLimited(
+            cooldownUntilMs = throttleCooldownUntilMs,
+            providerName = installedProviderLabel,
+            reason = msg
+        )
+        return@withLock AppCheckTokenOutcome.Failed(msg, isRateLimited = true)
+    }
+
+    // Reuse already-verified valid cached state without firing another SDK check
+    val currentState = _appCheckDiagnosticState.value
+    if (!forceRefresh &&
+        currentState is AppCheckDiagnosticState.Verified &&
+        currentState.expiresAtMs - now > 120_000L
+    ) {
+        return@withLock AppCheckTokenOutcome.Valid("", currentState.expiresAtMs)
+    }
+
+    val outcome = requestSingleToken(forceRefresh = forceRefresh)
+    when (outcome) {
+        is AppCheckTokenOutcome.Valid -> {
+            throttleCooldownUntilMs = 0L
             _appCheckDiagnosticState.value = AppCheckDiagnosticState.Verified(
                 expiresAtMs = outcome.expiresAtMs,
                 providerName = installedProviderLabel
             )
-            return@withLock outcome
         }
-        if (outcome is AppCheckTokenOutcome.Failed) {
-            lastErrorDetail = outcome.detail
-        }
-        if (attempt < maxAttempts) {
-            delay(1200L * attempt)
+        is AppCheckTokenOutcome.Failed -> {
+            if (outcome.isRateLimited || isThrottleDetail(outcome.detail)) {
+                markAppCheckRateLimited(outcome.detail)
+            } else {
+                _appCheckDiagnosticState.value = AppCheckDiagnosticState.AttentionNeeded(
+                    reason = outcome.detail,
+                    providerName = installedProviderLabel
+                )
+            }
         }
     }
-    _appCheckDiagnosticState.value = AppCheckDiagnosticState.AttentionNeeded(
-        reason = lastErrorDetail,
-        providerName = installedProviderLabel
-    )
-    AppCheckTokenOutcome.Failed(lastErrorDetail)
-}
-
-suspend fun refreshAppCheckToken(): Boolean {
-    return verifyOrRefreshAppCheckToken(forceRefresh = true, maxAttempts = 2) is AppCheckTokenOutcome.Valid
+    return@withLock outcome
 }
 
 private suspend fun requestSingleToken(forceRefresh: Boolean): AppCheckTokenOutcome =
@@ -177,7 +230,12 @@ private suspend fun requestSingleToken(forceRefresh: Boolean): AppCheckTokenOutc
                         val detail = embeddedError ?: "Empty App Check token returned."
                         Log.w(TAG, "App Check returned placeholder error token: $detail")
                         if (continuation.isActive) {
-                            continuation.resume(AppCheckTokenOutcome.Failed(detail))
+                            continuation.resume(
+                                AppCheckTokenOutcome.Failed(
+                                    detail = detail,
+                                    isRateLimited = isThrottleDetail(detail)
+                                )
+                            )
                         }
                     } else {
                         Log.d(TAG, "App Check token ready (expires=${result.expireTimeMillis}).")
@@ -192,14 +250,24 @@ private suspend fun requestSingleToken(forceRefresh: Boolean): AppCheckTokenOutc
                     val detail = error.localizedMessage ?: error.javaClass.simpleName
                     Log.w(TAG, "Failed to obtain App Check token: $detail", error)
                     if (continuation.isActive) {
-                        continuation.resume(AppCheckTokenOutcome.Failed(detail))
+                        continuation.resume(
+                            AppCheckTokenOutcome.Failed(
+                                detail = detail,
+                                isRateLimited = isThrottleDetail(detail)
+                            )
+                        )
                     }
                 }
         } catch (e: Exception) {
             val detail = e.localizedMessage ?: e.javaClass.simpleName
             Log.w(TAG, "Exception obtaining App Check token: $detail", e)
             if (continuation.isActive) {
-                continuation.resume(AppCheckTokenOutcome.Failed(detail))
+                continuation.resume(
+                    AppCheckTokenOutcome.Failed(
+                        detail = detail,
+                        isRateLimited = isThrottleDetail(detail)
+                    )
+                )
             }
         }
     }

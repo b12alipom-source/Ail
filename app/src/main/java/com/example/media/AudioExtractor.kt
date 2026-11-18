@@ -38,19 +38,21 @@ class MediaPreparationException(message: String, cause: Throwable? = null) : Exc
 
 object AudioExtractor {
 
-    suspend fun prepareChunkedForTranslation(
-        context: Context,
-        uri: Uri
-    ): PreparedChunkedMedia = withContext(Dispatchers.IO) {
+    fun resolveTitleAndDuration(context: Context, uri: Uri): Pair<String, Long> {
         runCatching {
             context.contentResolver.takePersistableUriPermission(
                 uri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         }
+        return resolveDisplayName(context, uri) to resolveDurationMs(context, uri)
+    }
 
-        val title = resolveDisplayName(context, uri)
-        val durationMs = resolveDurationMs(context, uri)
+    suspend fun prepareChunkedForTranslation(
+        context: Context,
+        uri: Uri
+    ): PreparedChunkedMedia = withContext(Dispatchers.IO) {
+        val (title, durationMs) = resolveTitleAndDuration(context, uri)
         val originalMime = context.contentResolver.getType(uri) ?: "video/mp4"
 
         // Extract AAC audio into time-windowed chunks (handles both short & very long videos)
