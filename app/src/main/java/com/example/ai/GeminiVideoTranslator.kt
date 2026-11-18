@@ -44,8 +44,8 @@ class GeminiVideoTranslator {
             "segments" to Schema.array(
                 items = Schema.obj(
                     properties = mapOf(
-                        "startMs" to Schema.integer(description = "Segment start time in milliseconds relative to this clip"),
-                        "endMs" to Schema.integer(description = "Segment end time in milliseconds relative to this clip"),
+                        "startSec" to Schema.double(description = "Segment start time in seconds relative to clip start (e.g. 0.5, 12.4)"),
+                        "endSec" to Schema.double(description = "Segment end time in seconds relative to clip start (e.g. 3.8, 16.0)"),
                         "originalText" to Schema.string(description = "Accurate verbatim transcription in original spoken language"),
                         "translatedText" to Schema.string(description = "Natural, context-aware translation into the target language")
                     )
@@ -172,10 +172,15 @@ class GeminiVideoTranslator {
             "The spoken language is ${sourceLanguage.nativeName} (${sourceLanguage.code})."
         }
 
+        val durationSec = chunkDurationMs / 1000.0
         val durationHint = if (chunkDurationMs > 0L) {
-            "This audio clip starts at 0 ms and has duration $chunkDurationMs ms. Keep all startMs and endMs within 0..$chunkDurationMs."
+            "This audio clip starts at 0.0 seconds and has total duration %.1f seconds. Set `startSec` and `endSec` in SECONDS as decimal numbers within 0.0..%.1f (for example, 1.5 and 4.8).".format(
+                java.util.Locale.US,
+                durationSec,
+                durationSec
+            )
         } else {
-            "Provide accurate millisecond timestamps starting from 0."
+            "Provide accurate timestamps in SECONDS starting from 0.0 (for example, 1.2 and 4.5)."
         }
 
         val contextBlock = if (previousContext.isNotBlank()) {
@@ -193,7 +198,7 @@ class GeminiVideoTranslator {
             2. Transcribe every spoken phrase verbatim in its original script inside `originalText`.
             3. Translate each segment thoughtfully into ${targetLanguage.nativeName} (ISO: ${targetLanguage.code}, Arabic label: ${targetLanguage.arabicName}) inside `translatedText`, respecting context, idioms, and natural grammar rather than stiff word-for-word translation.
             4. Split speech into clean, readable subtitle cues (typically 1.5 to 4.5 seconds each, concise 1-2 lines per cue).
-            5. $durationHint Ensure startMs < endMs and segments are ordered chronologically without overlapping.
+            5. $durationHint Ensure startSec < endSec and segments are ordered chronologically without overlapping.
             6. Write `summary` as a clear 1-2 sentence overview in ${targetLanguage.nativeName}.
             7. Write `detectedLanguageNameArabic` in Arabic (e.g. الإنجليزية, العربية, الفرنسية).
             8. If there is no speech in this clip, return an empty `segments` array.$contextBlock
@@ -417,6 +422,12 @@ class GeminiVideoTranslator {
             Log.w(TAG, "Primary model $PRIMARY_MODEL_NAME timed out, switching to fast fallback $FALLBACK_MODEL_NAME")
             return withTimeout(AI_TIMEOUT_MS) { call(fallbackModel) }
         } catch (e: Exception) {
+            if (isAppCheckError(e)) {
+                Log.w(TAG, "App Check token invalid/rejected, forcing token refresh and retrying", e)
+                refreshAppCheckToken()
+                delay(500L)
+                return withTimeout(AI_TIMEOUT_MS) { call(primaryModel) }
+            }
             if (!isTransientCapacityError(e)) throw e
             Log.w(TAG, "Primary model $PRIMARY_MODEL_NAME under high demand, falling back to $FALLBACK_MODEL_NAME", e)
             delay(750L)
@@ -425,12 +436,22 @@ class GeminiVideoTranslator {
             } catch (fallbackErr: CancellationException) {
                 throw fallbackErr
             } catch (fallbackErr: Exception) {
+                if (isAppCheckError(fallbackErr)) {
+                    refreshAppCheckToken()
+                    delay(500L)
+                    return withTimeout(AI_TIMEOUT_MS) { call(fallbackModel) }
+                }
                 if (!isTransientCapacityError(fallbackErr)) throw fallbackErr
                 Log.w(TAG, "Fallback model also busy, retrying once after brief delay", fallbackErr)
                 delay(1500L)
                 return withTimeout(AI_TIMEOUT_MS) { call(fallbackModel) }
             }
         }
+    }
+
+    private fun isAppCheckError(e: Throwable): Boolean {
+        val msg = (e.message ?: e.localizedMessage ?: "").lowercase()
+        return msg.contains("app check") || msg.contains("appcheck") || msg.contains("attestation")
     }
 
     private fun isTransientCapacityError(e: Throwable): Boolean {
@@ -450,6 +471,8 @@ class GeminiVideoTranslator {
         val msg = (e.message ?: e.localizedMessage ?: "").trim()
         val lower = msg.lowercase()
         return when {
+            isAppCheckError(e) ->
+                "تعذر التحقق المؤقت من الأمان (App Check). تأكد من استقرار الشبكة أو أوقف VPN مؤقتاً ثم أعد المحاولة."
             isTransientCapacityError(e) ->
                 "خادم الذكاء الاصطناعي مزدحم مؤقتاً بسبب ضغط الطلبات. انتظر ثوانٍ ثم حاول مجدداً."
             e is IOException || lower.contains("unable to resolve host") || lower.contains("network") ->
@@ -458,6 +481,13 @@ class GeminiVideoTranslator {
             else -> defaultMessage
         }
     }
+
+    private data class RawCueEntry(
+        val rawStart: Double,
+        val rawEnd: Double,
+        val originalText: String,
+        val translatedText: String
+    )
 
     private fun parseTranslationJson(
         rawJson: String,
@@ -472,34 +502,99 @@ class GeminiVideoTranslator {
         val summary = json.optString("summary", "")
         val segmentsJson = json.optJSONArray("segments") ?: JSONArray()
 
-        val parsedSegments = mutableListOf<GeneratedSegment>()
+        val rawEntries = mutableListOf<RawCueEntry>()
         for (i in 0 until segmentsJson.length()) {
             val item = segmentsJson.getJSONObject(i)
             val original = item.optString("originalText", "").trim()
             val translated = item.optString("translatedText", "").trim()
             if (original.isEmpty() && translated.isEmpty()) continue
 
-            var localStart = item.optLong("startMs", 0L).coerceAtLeast(0L)
-            var localEnd = item.optLong("endMs", localStart + 2000L)
-            if (chunkDurationMs > 0L) {
-                localStart = localStart.coerceAtMost((chunkDurationMs - 400L).coerceAtLeast(0L))
-                localEnd = localEnd.coerceIn(localStart + 300L, chunkDurationMs)
-            } else if (localEnd <= localStart) {
-                localEnd = localStart + 1500L
-            }
+            val rawStart = when {
+                item.has("startSec") -> item.optDouble("startSec", 0.0)
+                item.has("startMs") -> item.optDouble("startMs", 0.0) / 1000.0
+                else -> 0.0
+            }.takeIf { it.isFinite() && it >= 0.0 } ?: 0.0
 
-            parsedSegments.add(
-                GeneratedSegment(
-                    startMs = startOffsetMs + localStart,
-                    endMs = startOffsetMs + localEnd,
-                    originalText = original,
-                    translatedText = translated.ifEmpty { original }
-                )
+            val rawEnd = when {
+                item.has("endSec") -> item.optDouble("endSec", rawStart + 2.0)
+                item.has("endMs") -> item.optDouble("endMs", (rawStart + 2.0) * 1000.0) / 1000.0
+                else -> rawStart + 2.0
+            }.takeIf { it.isFinite() && it > rawStart } ?: (rawStart + 2.0)
+
+            rawEntries.add(RawCueEntry(rawStart, rawEnd, original, translated.ifEmpty { original }))
+        }
+
+        if (rawEntries.isEmpty() && !allowEmptySegments) {
+            throw IllegalStateException("لم يتم رصد أي كلام منطوق واضح في هذا المقطع.")
+        }
+
+        val chunkDurationSec = chunkDurationMs / 1000.0
+        val maxRawEnd = rawEntries.maxOfOrNull { it.rawEnd } ?: 0.0
+        // Auto-recover if model mistakenly output milliseconds in startSec/endSec fields
+        val scaleFactor = if (chunkDurationSec > 0.0 && maxRawEnd > chunkDurationSec * 2.5) 0.001 else 1.0
+        val scaledEntries = rawEntries.map { entry ->
+            entry.copy(
+                rawStart = entry.rawStart * scaleFactor,
+                rawEnd = entry.rawEnd * scaleFactor
             )
         }
 
-        if (parsedSegments.isEmpty() && !allowEmptySegments) {
-            throw IllegalStateException("لم يتم رصد أي كلام منطوق واضح في هذا المقطع.")
+        val minScaledStartMs = ((scaledEntries.minOfOrNull { it.rawStart } ?: 0.0) * 1000.0).toLong()
+        val maxScaledEndMs = ((scaledEntries.maxOfOrNull { it.rawEnd } ?: 0.0) * 1000.0).toLong()
+        val spanMs = maxScaledEndMs - minScaledStartMs
+        val collapsedCount = scaledEntries.count { ((it.rawEnd - it.rawStart) * 1000.0) < 250.0 }
+        val needsProportionalRepair = chunkDurationMs >= 6_000L && scaledEntries.size >= 2 && (
+            spanMs < (chunkDurationMs * 0.20).toLong() ||
+                collapsedCount > scaledEntries.size / 2
+            )
+
+        val parsedSegments = mutableListOf<GeneratedSegment>()
+        if (needsProportionalRepair) {
+            // Distribute cues proportionally across the audio chunk by spoken word length
+            val weights = scaledEntries.map { it.originalText.length.coerceAtLeast(12).toDouble() }
+            val totalWeight = weights.sum().coerceAtLeast(1.0)
+            var cursorMs = 0L
+            scaledEntries.forEachIndexed { idx, entry ->
+                val sliceMs = ((weights[idx] / totalWeight) * chunkDurationMs).toLong().coerceAtLeast(900L)
+                val localStart = cursorMs.coerceAtMost((chunkDurationMs - 400L).coerceAtLeast(0L))
+                val localEnd = if (idx == scaledEntries.lastIndex) {
+                    chunkDurationMs
+                } else {
+                    (localStart + sliceMs).coerceIn(localStart + 400L, chunkDurationMs)
+                }
+                cursorMs = localEnd
+                parsedSegments.add(
+                    GeneratedSegment(
+                        startMs = startOffsetMs + localStart,
+                        endMs = startOffsetMs + localEnd,
+                        originalText = entry.originalText,
+                        translatedText = entry.translatedText
+                    )
+                )
+            }
+        } else {
+            var prevEndMs = 0L
+            scaledEntries.forEach { entry ->
+                var localStart = (entry.rawStart * 1000.0).toLong().coerceAtLeast(0L)
+                var localEnd = (entry.rawEnd * 1000.0).toLong()
+                if (chunkDurationMs > 0L) {
+                    localStart = localStart.coerceAtLeast(prevEndMs.coerceAtMost((chunkDurationMs - 600L).coerceAtLeast(0L)))
+                    localStart = localStart.coerceAtMost((chunkDurationMs - 400L).coerceAtLeast(0L))
+                    localEnd = localEnd.coerceIn((localStart + 800L).coerceAtMost(chunkDurationMs), chunkDurationMs)
+                } else {
+                    if (localStart < prevEndMs) localStart = prevEndMs
+                    if (localEnd <= localStart) localEnd = localStart + 1500L
+                }
+                prevEndMs = localEnd
+                parsedSegments.add(
+                    GeneratedSegment(
+                        startMs = startOffsetMs + localStart,
+                        endMs = startOffsetMs + localEnd,
+                        originalText = entry.originalText,
+                        translatedText = entry.translatedText
+                    )
+                )
+            }
         }
 
         return VideoTranslationResult(

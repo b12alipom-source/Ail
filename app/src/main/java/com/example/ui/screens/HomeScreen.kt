@@ -68,6 +68,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -109,6 +110,16 @@ fun HomeScreen(
     val targetLanguage by viewModel.targetLanguage.collectAsStateWithLifecycle()
     val translationStyle by viewModel.translationStyle.collectAsStateWithLifecycle()
     val processingState by viewModel.processingState.collectAsStateWithLifecycle()
+    val view = LocalView.current
+
+    val isActivelyProcessing = processingState is ProcessingUiState.ExtractingAudio ||
+        processingState is ProcessingUiState.Translating
+    androidx.compose.runtime.DisposableEffect(view, isActivelyProcessing) {
+        view.keepScreenOn = isActivelyProcessing
+        onDispose {
+            view.keepScreenOn = false
+        }
+    }
 
     var showSourcePicker by remember { mutableStateOf(false) }
     var showTargetPicker by remember { mutableStateOf(false) }

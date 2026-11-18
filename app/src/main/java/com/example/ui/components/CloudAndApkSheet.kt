@@ -75,22 +75,22 @@ fun CloudAndApkSheet(
             InfoCard(
                 icon = Icons.Outlined.CloudDone,
                 iconTint = EmeraldSuccess,
-                title = "الخادم السحابي الدائم (24/7)",
-                description = "التطبيق متصل مباشرة بمحرك Firebase AI Logic (Gemini 3.8 Flash) السحابي الذي يعمل طوال الوقت دون انقطاع بمجرد تثبيت التطبيق على هاتفك."
+                title = "خادم سحابي مستقل دائم (24/7)",
+                description = "التطبيق مرتبط مباشرة بخوادم غوغل عبر Firebase AI Logic (Gemini 3.8 Flash مع بديل تلقائي سريع) ويعمل بشكل مستقل تماماً على هاتفك دون الحاجة لفتح منصة AI Studio."
             )
 
             InfoCard(
                 icon = Icons.Outlined.InstallMobile,
                 iconTint = IceSapphireGlow,
-                title = "تثبيت التطبيق على هاتفك (APK)",
-                description = "لتشغيل «بيان v${BuildConfig.VERSION_NAME}» مباشرة على أندرويد بدلاً من محاكي المتصفح: افتح قائمة الإعدادات (Settings) في أعلى منصة AI Studio واختر توليد وتحميل ملف APK ثم ثبّته على هاتفك."
+                title = "ثبات مستمر أثناء العمل (${BuildConfig.VERSION_NAME}v)",
+                description = "يبقى التطبيق نشطاً أثناء الترجمة والمشاهدة مع منع إطفاء الشاشة تلقائياً أو إعادة التشغيل عند تدوير الجهاز، وتُحفظ جميع الترجمات محلياً في جهازك."
             )
 
             InfoCard(
                 icon = Icons.Outlined.VerifiedUser,
                 iconTint = IceSapphire,
-                title = "حماية الإصدار للهواتف الحقيقية",
-                description = "نسخة الإصدار (Release) مهيأة بحماية App Check reCAPTCHA Enterprise وقاعدة بيانات محلية، لتعمل بكفاءة مستقلة خارج المتصفح."
+                title = "حماية الإصدار وإدارة التحقق التلقائي",
+                description = "نسخة الإصدار (Release) مزودة بتجديد تلقائي لرمز App Check ومعالجة ذكية لمقاطع الفيديو الطويلة بدقة مزامنة عالية."
             )
 
             Spacer(modifier = Modifier.height(4.dp))

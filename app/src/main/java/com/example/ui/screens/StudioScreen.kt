@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -65,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -246,8 +249,17 @@ private fun StudioReadyContent(
     onDismissReTranslateError: () -> Unit
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var isVideoUnavailable by remember(state.project.videoUri) { mutableStateOf(false) }
+
+    DisposableEffect(view, isVideoUnavailable, state.isReTranslating) {
+        val shouldKeepAwake = !isVideoUnavailable || state.isReTranslating
+        view.keepScreenOn = shouldKeepAwake
+        onDispose {
+            view.keepScreenOn = false
+        }
+    }
 
     val exoPlayer = remember(context) {
         ExoPlayer.Builder(context).build()
@@ -376,7 +388,8 @@ private fun StudioReadyContent(
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .fillMaxHeight(),
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         VideoPlayerCard(

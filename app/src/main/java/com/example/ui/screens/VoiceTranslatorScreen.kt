@@ -61,6 +61,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -97,11 +98,20 @@ fun VoiceTranslatorScreen(
     outerPadding: PaddingValues
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val sourceLanguage by viewModel.sourceLanguage.collectAsStateWithLifecycle()
     val targetLanguage by viewModel.targetLanguage.collectAsStateWithLifecycle()
     val translationStyle by viewModel.translationStyle.collectAsStateWithLifecycle()
     val voiceUiState by viewModel.voiceUiState.collectAsStateWithLifecycle()
     val voiceHistory by viewModel.voiceHistory.collectAsStateWithLifecycle()
+
+    val isVoiceBusy = voiceUiState is VoiceUiState.Recording || voiceUiState is VoiceUiState.Translating
+    DisposableEffect(view, isVoiceBusy) {
+        view.keepScreenOn = isVoiceBusy
+        onDispose {
+            view.keepScreenOn = false
+        }
+    }
 
     var showSourcePicker by remember { mutableStateOf(false) }
     var showTargetPicker by remember { mutableStateOf(false) }
