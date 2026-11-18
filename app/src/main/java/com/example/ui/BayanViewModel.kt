@@ -12,8 +12,11 @@ import com.example.ai.OfflineTranslationEngine
 import com.example.ai.appCheckDiagnosticState
 import com.example.ai.isAppCheckRateLimited
 import com.example.ai.verifyOrRefreshAppCheckToken
+import com.example.data.FolderAccent
 import com.example.data.GeneratedSegment
 import com.example.data.LanguageOption
+import com.example.data.StudyAttachmentType
+import com.example.data.StudyMethod
 import com.example.data.SubtitleDisplayMode
 import com.example.data.SupportedLanguages
 import com.example.data.TranslationRepository
@@ -21,6 +24,11 @@ import com.example.data.TranslationStyle
 import com.example.data.VideoTranslationResult
 import com.example.data.VoiceTranslationResult
 import com.example.data.db.AppDatabase
+import com.example.data.db.ProjectFolderEntity
+import com.example.data.db.StudyAttachmentEntity
+import com.example.data.db.StudyMessageEntity
+import com.example.data.db.StudyNotebookEntity
+import com.example.data.db.StudyScheduleItemEntity
 import com.example.data.db.SubtitleCueEntity
 import com.example.data.db.VideoProjectEntity
 import com.example.data.db.VoiceTranslationEntity
@@ -38,8 +46,11 @@ import com.example.media.VoskModelManager
 import com.example.security.SecurityAuditReport
 import com.example.security.SecurityInspector
 import com.example.service.TranslationKeepAliveService
+import com.example.study.StudyAiAssistant
+import com.example.study.StudyAttachmentExtractor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,6 +58,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -127,6 +141,14 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         VoskLiveMicRecognizer()
     }
 
+    private val studyExtractor: StudyAttachmentExtractor by lazy {
+        StudyAttachmentExtractor(getApplication())
+    }
+
+    private val studyAssistant: StudyAiAssistant by lazy {
+        StudyAiAssistant()
+    }
+
     private var activeOfflineVoskMic = false
 
     val securityReport: SecurityAuditReport by lazy {
@@ -135,6 +157,16 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
 
     val appCheckStatus: StateFlow<AppCheckDiagnosticState> = appCheckDiagnosticState
 
+    val folders: StateFlow<List<ProjectFolderEntity>> = repository.allFolders
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = emptyList()
+        )
+
+    private val _selectedFolderId = MutableStateFlow<Long?>(null)
+    val selectedFolderId: StateFlow<Long?> = _selectedFolderId.asStateFlow()
+
     val projects: StateFlow<List<VideoProjectEntity>> = repository.allProjects
         .stateIn(
             scope = viewModelScope,
@@ -142,12 +174,75 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
             initialValue = emptyList()
         )
 
+    val filteredProjects: StateFlow<List<VideoProjectEntity>> = combine(
+        projects,
+        _selectedFolderId
+    ) { all, folderFilter ->
+        if (folderFilter == null) all else all.filter { it.folderId == folderFilter }
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000L),
+        initialValue = emptyList()
+    )
+
     val voiceHistory: StateFlow<List<VoiceTranslationEntity>> = repository.allVoiceTranslations
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000L),
             initialValue = emptyList()
         )
+
+    val studyNotebooks: StateFlow<List<StudyNotebookEntity>> = repository.allStudyNotebooks
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = emptyList()
+        )
+
+    private val _activeStudyNotebookId = MutableStateFlow<Long?>(null)
+    val activeStudyNotebookId: StateFlow<Long?> = _activeStudyNotebookId.asStateFlow()
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val activeStudyAttachments: StateFlow<List<StudyAttachmentEntity>> = _activeStudyNotebookId
+        .flatMapLatest { id ->
+            if (id == null) flowOf(emptyList()) else repository.observeStudyAttachments(id)
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = emptyList()
+        )
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val activeStudySchedule: StateFlow<List<StudyScheduleItemEntity>> = _activeStudyNotebookId
+        .flatMapLatest { id ->
+            if (id == null) flowOf(emptyList()) else repository.observeStudySchedule(id)
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = emptyList()
+        )
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val activeStudyMessages: StateFlow<List<StudyMessageEntity>> = _activeStudyNotebookId
+        .flatMapLatest { id ->
+            if (id == null) flowOf(emptyList()) else repository.observeStudyMessages(id)
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = emptyList()
+        )
+
+    private val _studyBusyMessage = MutableStateFlow<String?>(null)
+    val studyBusyMessage: StateFlow<String?> = _studyBusyMessage.asStateFlow()
+
+    private val _studyError = MutableStateFlow<String?>(null)
+    val studyError: StateFlow<String?> = _studyError.asStateFlow()
+
+    private val _studyNotice = MutableStateFlow<String?>(null)
+    val studyNotice: StateFlow<String?> = _studyNotice.asStateFlow()
 
     private val _sourceLanguage = MutableStateFlow(SupportedLanguages.autoDetect)
     val sourceLanguage: StateFlow<LanguageOption> = _sourceLanguage.asStateFlow()
@@ -365,7 +460,8 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                         videoUri = uri.toString(),
                         durationMs = initialDurationMs,
                         targetLanguage = chosenTarget,
-                        result = localResult
+                        result = localResult,
+                        folderId = _selectedFolderId.value
                     )
                     _processingState.value = ProcessingUiState.Idle
                     onCompleted(savedId)
@@ -489,7 +585,8 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     videoUri = uri.toString(),
                     durationMs = payload.totalDurationMs,
                     targetLanguage = chosenTarget,
-                    result = mergedResult
+                    result = mergedResult,
+                    folderId = _selectedFolderId.value
                 )
 
                 _processingState.value = ProcessingUiState.Idle
@@ -689,7 +786,8 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     videoUri = "",
                     durationMs = totalDuration,
                     targetLanguage = chosenTarget,
-                    result = result
+                    result = result,
+                    folderId = _selectedFolderId.value
                 )
                 _processingState.value = ProcessingUiState.Idle
                 onCompleted(savedId)
@@ -1012,10 +1110,376 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun selectFolder(folderId: Long?) {
+        _selectedFolderId.value = folderId
+    }
+
+    fun createFolder(name: String, accentKey: String = FolderAccent.SAPPHIRE.key) {
+        val clean = name.trim()
+        if (clean.isEmpty()) return
+        viewModelScope.launch {
+            val newId = repository.createFolder(clean, accentKey)
+            _selectedFolderId.value = newId
+        }
+    }
+
+    fun renameFolder(folderId: Long, newName: String, accentKey: String = FolderAccent.SAPPHIRE.key) {
+        val clean = newName.trim()
+        if (clean.isEmpty()) return
+        viewModelScope.launch {
+            repository.renameFolder(folderId, clean, accentKey)
+        }
+    }
+
+    fun deleteFolder(folderId: Long) {
+        viewModelScope.launch {
+            if (_selectedFolderId.value == folderId) {
+                _selectedFolderId.value = null
+            }
+            repository.deleteFolder(folderId)
+        }
+    }
+
+    fun renameProject(projectId: Long, newTitle: String) {
+        val clean = newTitle.trim()
+        if (clean.isEmpty()) return
+        viewModelScope.launch {
+            repository.renameProject(projectId, clean)
+        }
+    }
+
+    fun moveProjectToFolder(projectId: Long, folderId: Long?) {
+        viewModelScope.launch {
+            repository.moveProjectToFolder(projectId, folderId)
+        }
+    }
+
     fun deleteProject(projectId: Long) {
         viewModelScope.launch {
             repository.deleteProject(projectId)
         }
+    }
+
+    // --- Study Studio Actions ---
+    fun selectStudyNotebook(notebookId: Long?) {
+        _activeStudyNotebookId.value = notebookId
+        _studyError.value = null
+        _studyNotice.value = null
+    }
+
+    fun createStudyNotebook(
+        title: String,
+        method: StudyMethod = StudyMethod.FOCUSED_SUMMARY,
+        dailyMinutes: Int = 60,
+        totalDays: Int = 5,
+        linkedProjectId: Long? = null
+    ) {
+        val clean = title.trim().ifBlank { "دفتر دراسة جديد" }
+        viewModelScope.launch {
+            val newId = repository.createStudyNotebook(
+                title = clean,
+                method = method,
+                dailyMinutes = dailyMinutes,
+                totalDays = totalDays,
+                linkedProjectId = linkedProjectId
+            )
+            _activeStudyNotebookId.value = newId
+        }
+    }
+
+    fun openOrCreateStudyFromProject(projectId: Long) {
+        viewModelScope.launch {
+            val existing = repository.allStudyNotebooks.first().firstOrNull { it.linkedProjectId == projectId }
+            if (existing != null) {
+                _activeStudyNotebookId.value = existing.id
+                return@launch
+            }
+            val project = repository.getProject(projectId) ?: return@launch
+            val cues = repository.getCues(projectId)
+            val newId = repository.createStudyNotebook(
+                title = "دراسة: ${project.title}",
+                method = StudyMethod.FOCUSED_SUMMARY,
+                dailyMinutes = 60,
+                totalDays = 4,
+                linkedProjectId = projectId
+            )
+            val transcript = buildString {
+                if (project.summary.isNotBlank()) {
+                    appendLine("ملخص المقطع: ${project.summary}\n")
+                }
+                cues.forEach { cue ->
+                    appendLine("${cue.translatedText} (${cue.originalText})")
+                }
+            }.trim()
+            repository.addStudyAttachment(
+                StudyAttachmentEntity(
+                    notebookId = newId,
+                    displayName = project.title,
+                    attachmentType = StudyAttachmentType.VIDEO_TRANSCRIPT.key,
+                    mimeType = "text/plain",
+                    localFilePath = "",
+                    extractedText = transcript.take(24_000)
+                )
+            )
+            _activeStudyNotebookId.value = newId
+        }
+    }
+
+    fun updateStudyNotebookConfig(
+        notebookId: Long,
+        title: String,
+        method: StudyMethod,
+        dailyMinutes: Int,
+        totalDays: Int
+    ) {
+        val clean = title.trim()
+        if (clean.isEmpty()) return
+        viewModelScope.launch {
+            repository.updateStudyNotebookConfig(notebookId, clean, method, dailyMinutes, totalDays)
+        }
+    }
+
+    fun deleteStudyNotebook(notebookId: Long) {
+        viewModelScope.launch {
+            val atts = repository.getStudyAttachments(notebookId)
+            atts.forEach { studyExtractor.deleteLocalFileIfExists(it.localFilePath) }
+            if (_activeStudyNotebookId.value == notebookId) {
+                _activeStudyNotebookId.value = null
+            }
+            repository.deleteStudyNotebook(notebookId)
+        }
+    }
+
+    fun attachStudyDocumentUri(uri: Uri) {
+        val notebookId = _activeStudyNotebookId.value ?: return
+        viewModelScope.launch {
+            _studyError.value = null
+            _studyBusyMessage.value = "جاري استخلاص وقراءة الملف المرفق…"
+            try {
+                val ingested = studyExtractor.ingestDocumentOrPdf(uri)
+                repository.addStudyAttachment(
+                    StudyAttachmentEntity(
+                        notebookId = notebookId,
+                        displayName = ingested.displayName,
+                        attachmentType = ingested.type.key,
+                        mimeType = ingested.mimeType,
+                        localFilePath = ingested.localFilePath,
+                        extractedText = ingested.extractedText
+                    )
+                )
+                _studyNotice.value = "تم إرفاق «${ingested.displayName}» بنجاح."
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Attach study document failed", e)
+                _studyError.value = e.localizedMessage ?: "تعذر إرفاق الملف المحدد."
+            } finally {
+                _studyBusyMessage.value = null
+            }
+        }
+    }
+
+    fun attachStudyPhotoUri(uri: Uri) {
+        val notebookId = _activeStudyNotebookId.value ?: return
+        viewModelScope.launch {
+            _studyError.value = null
+            _studyBusyMessage.value = "جاري معالجة صورة الدرس وقراءة محتواها…"
+            try {
+                val ingested = studyExtractor.ingestLecturePhoto(uri)
+                repository.addStudyAttachment(
+                    StudyAttachmentEntity(
+                        notebookId = notebookId,
+                        displayName = ingested.displayName,
+                        attachmentType = ingested.type.key,
+                        mimeType = ingested.mimeType,
+                        localFilePath = ingested.localFilePath,
+                        extractedText = ingested.extractedText
+                    )
+                )
+                _studyNotice.value = "تمت إضافة صورة الدرس «${ingested.displayName}»."
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Attach study photo failed", e)
+                _studyError.value = e.localizedMessage ?: "تعذر إرفاق الصورة."
+            } finally {
+                _studyBusyMessage.value = null
+            }
+        }
+    }
+
+    fun attachStudyTextNote(title: String, noteBody: String) {
+        val notebookId = _activeStudyNotebookId.value ?: return
+        if (noteBody.isBlank()) {
+            _studyError.value = "اكتب نص الملاحظة أو المادة أولاً."
+            return
+        }
+        viewModelScope.launch {
+            val ingested = studyExtractor.savePlainNoteAttachment(title, noteBody)
+            repository.addStudyAttachment(
+                StudyAttachmentEntity(
+                    notebookId = notebookId,
+                    displayName = ingested.displayName,
+                    attachmentType = StudyAttachmentType.TEXT.key,
+                    mimeType = ingested.mimeType,
+                    localFilePath = ingested.localFilePath,
+                    extractedText = ingested.extractedText
+                )
+            )
+            _studyNotice.value = "تم حفظ الملاحظة الدراسية «${ingested.displayName}»."
+        }
+    }
+
+    fun attachTranslatedProjectToStudy(projectId: Long) {
+        val notebookId = _activeStudyNotebookId.value ?: return
+        viewModelScope.launch {
+            val project = repository.getProject(projectId) ?: return@launch
+            val cues = repository.getCues(projectId)
+            val transcript = buildString {
+                if (project.summary.isNotBlank()) {
+                    appendLine("ملخص المقطع: ${project.summary}\n")
+                }
+                cues.forEach { cue ->
+                    appendLine("${cue.translatedText} (${cue.originalText})")
+                }
+            }.trim()
+            repository.addStudyAttachment(
+                StudyAttachmentEntity(
+                    notebookId = notebookId,
+                    displayName = project.title,
+                    attachmentType = StudyAttachmentType.VIDEO_TRANSCRIPT.key,
+                    mimeType = "text/plain",
+                    localFilePath = "",
+                    extractedText = transcript.take(24_000)
+                )
+            )
+            _studyNotice.value = "تم ربط نص الفيديو «${project.title}» بالمادة."
+        }
+    }
+
+    fun removeStudyAttachment(attachment: StudyAttachmentEntity) {
+        viewModelScope.launch {
+            studyExtractor.deleteLocalFileIfExists(attachment.localFilePath)
+            repository.deleteStudyAttachment(attachment.id)
+        }
+    }
+
+    fun generateStudySummaryAndSchedule(
+        methodOverride: StudyMethod? = null,
+        dailyMinutesOverride: Int? = null,
+        totalDaysOverride: Int? = null
+    ) {
+        val notebookId = _activeStudyNotebookId.value ?: return
+        viewModelScope.launch {
+            _studyError.value = null
+            _studyNotice.value = null
+            _studyBusyMessage.value = "جاري تحليل ملفاتك وصناعة الملخص والجدول المخصص…"
+            try {
+                val notebook = repository.getStudyNotebook(notebookId) ?: return@launch
+                val method = methodOverride ?: StudyMethod.fromKey(notebook.preferredMethod)
+                val dailyMins = (dailyMinutesOverride ?: notebook.dailyMinutes).coerceIn(15, 480)
+                val days = (totalDaysOverride ?: notebook.totalDays).coerceIn(1, 30)
+
+                if (methodOverride != null || dailyMinutesOverride != null || totalDaysOverride != null) {
+                    repository.updateStudyNotebookConfig(
+                        notebookId = notebookId,
+                        title = notebook.title,
+                        method = method,
+                        dailyMinutes = dailyMins,
+                        totalDays = days
+                    )
+                }
+
+                val attachments = repository.getStudyAttachments(notebookId)
+                if (attachments.isEmpty()) {
+                    _studyError.value = "أرفق ملف PDF أو صورة أو ملاحظة أو فيديو مترجم أولاً ليقوم المساعد بتلخيصه."
+                    return@launch
+                }
+
+                val plan = studyAssistant.generateStudyPlan(
+                    notebookTitle = notebook.title,
+                    method = method,
+                    dailyMinutes = dailyMins,
+                    totalDays = days,
+                    attachments = attachments,
+                    preferOffline = _offlineEngineMode.value
+                )
+                repository.saveGeneratedStudyPlan(notebookId, plan)
+                _studyNotice.value = if (plan.isOfflineFallback) {
+                    "تم إنشاء الملخص والجدول محلياً على جهازك (وضع أوفلاين)."
+                } else {
+                    "تم توليد الملخص الذكي والجدول المخصص بنجاح."
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Study generation failed", e)
+                _studyError.value = e.localizedMessage ?: "تعذر إنشاء الملخص والجدول."
+            } finally {
+                _studyBusyMessage.value = null
+            }
+        }
+    }
+
+    fun toggleStudyScheduleTask(itemId: Long, completed: Boolean) {
+        viewModelScope.launch {
+            repository.toggleScheduleItemCompleted(itemId, completed)
+        }
+    }
+
+    fun sendStudyTutorQuestion(questionText: String) {
+        val notebookId = _activeStudyNotebookId.value ?: return
+        val cleanQuestion = questionText.trim()
+        if (cleanQuestion.isEmpty()) return
+
+        viewModelScope.launch {
+            _studyError.value = null
+            _studyBusyMessage.value = "المعلم الذكي يفكر في إجابتك…"
+            try {
+                val notebook = repository.getStudyNotebook(notebookId) ?: return@launch
+                val attachments = repository.getStudyAttachments(notebookId)
+                val history = repository.getStudyMessages(notebookId)
+                repository.addStudyMessage(notebookId, isUser = true, text = cleanQuestion)
+
+                val (answer, isOffline) = studyAssistant.askStudyTutor(
+                    notebookTitle = notebook.title,
+                    method = StudyMethod.fromKey(notebook.preferredMethod),
+                    summary = notebook.summaryMarkdown,
+                    attachments = attachments,
+                    history = history,
+                    userQuestion = cleanQuestion,
+                    preferOffline = _offlineEngineMode.value
+                )
+                repository.addStudyMessage(
+                    notebookId = notebookId,
+                    isUser = false,
+                    text = answer,
+                    isOfflineGenerated = isOffline
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Study tutor Q&A failed", e)
+                _studyError.value = e.localizedMessage ?: "تعذر الرد على سؤالك حالياً."
+            } finally {
+                _studyBusyMessage.value = null
+            }
+        }
+    }
+
+    fun clearStudyChat() {
+        val notebookId = _activeStudyNotebookId.value ?: return
+        viewModelScope.launch {
+            repository.clearStudyMessages(notebookId)
+        }
+    }
+
+    fun dismissStudyError() {
+        _studyError.value = null
+    }
+
+    fun dismissStudyNotice() {
+        _studyNotice.value = null
     }
 
     fun observeStudioState(projectId: Long): StateFlow<StudioUiState> {

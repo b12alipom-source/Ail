@@ -121,32 +121,32 @@ jobs:
 
       - name: Package APK & AAB with SHA-256 verification
         run: |
-          cp app/build/outputs/apk/release/app-release.apk Bayan-v3.2.apk
-          cp app/build/outputs/bundle/release/app-release.aab Bayan-v3.2.aab
-          APK_SHA256=$(sha256sum Bayan-v3.2.apk | awk '{print $1}')
+          cp app/build/outputs/apk/release/app-release.apk Bayan-v4.0.apk
+          cp app/build/outputs/bundle/release/app-release.aab Bayan-v4.0.aab
+          APK_SHA256=$(sha256sum Bayan-v4.0.apk | awk '{print $1}')
           echo "APK_SHA256=${APK_SHA256}" >> "$GITHUB_ENV"
 
       - name: Publish APK and AAB to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v3.2
-          name: Bayan V3.2 (Embedded Vosk Offline Speech + ML Kit)
+          tag_name: v4.0
+          name: Bayan V4.0 (Fullscreen Studio + Folders + AI Study Studio)
           body: |
-            تطبيق بيان v3.2 — محرك Vosk المستقل لتفريغ الفيديو والصوت أوفلاين:
-            - تضمين محرك Vosk المستقل (`vosk-android`) داخل التطبيق للتفريغ الصوتي المحلي للفيديو والمايك بدون الاعتماد على خدمات النظام.
-            - إدارة وتنزيل نماذج الكلام لكل لغة مع مزامنة دقيقة على مستوى الكلمات والترجمة عبر ML Kit.
-            - تحسين تباعد الشريط العلوي على الأجهزة اللوحية (التابلت) واستقرار التحويل التلقائي المحلي عند حظر App Check.
+            تطبيق بيان v4.0 — التحديث الشامل للمشاهدة والتنظيم والدراسة:
+            - وضع ملء الشاشة بالعرض (Landscape Fullscreen) داخل مشغل الفيديو مع ظهور الترجمة وخيارات التخصيص.
+            - إعادة تسمية المقاطع المترجمة وإنشاء مجلدات مخصصة لترتيب المكتبة بسهولة.
+            - تبويب «مساعد الدراسة» الجديد: إرفاق ملفات PDF وصور الدروس والملاحظات أو ربط الفيديوهات المترجمة، مع تلخيص مخصص وجدول دراسي تفاعلي وشات تعليمي (سحابي + أوفلاين).
             - نوع التوقيع: ${{ env.KEYSTORE_MODE }}
             - بصمة شهادة التطبيق (SHA-256): `${{ env.CERT_SHA256 }}`
             - بصمة ملف APK (SHA-256): `${{ env.APK_SHA256 }}`
           files: |
-            Bayan-v3.2.apk
-            Bayan-v3.2.aab
+            Bayan-v4.0.apk
+            Bayan-v4.0.aab
 
       - name: Upload APK and AAB artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Bayan-v3.2-Artifacts
+          name: Bayan-v4.0-Artifacts
           path: |
-            Bayan-v3.2.apk
-            Bayan-v3.2.aab
+            Bayan-v4.0.apk
+            Bayan-v4.0.aab

@@ -1,5 +1,10 @@
 package com.example.data
 
+import com.example.data.db.ProjectFolderEntity
+import com.example.data.db.StudyAttachmentEntity
+import com.example.data.db.StudyMessageEntity
+import com.example.data.db.StudyNotebookEntity
+import com.example.data.db.StudyScheduleItemEntity
 import com.example.data.db.SubtitleCueEntity
 import com.example.data.db.TranslationDao
 import com.example.data.db.VideoProjectEntity
@@ -9,9 +14,30 @@ import kotlinx.coroutines.flow.Flow
 class TranslationRepository(
     private val dao: TranslationDao
 ) {
+    val allFolders: Flow<List<ProjectFolderEntity>> = dao.getAllFolders()
     val allProjects: Flow<List<VideoProjectEntity>> = dao.getAllProjects()
     val allVoiceTranslations: Flow<List<VoiceTranslationEntity>> = dao.getAllVoiceTranslations()
+    val allStudyNotebooks: Flow<List<StudyNotebookEntity>> = dao.getAllStudyNotebooks()
 
+    // --- Folders ---
+    suspend fun createFolder(name: String, accentKey: String = FolderAccent.SAPPHIRE.key): Long {
+        return dao.insertFolder(
+            ProjectFolderEntity(
+                name = name.trim(),
+                accentKey = accentKey
+            )
+        )
+    }
+
+    suspend fun renameFolder(folderId: Long, name: String, accentKey: String) {
+        dao.updateFolder(folderId, name.trim(), accentKey)
+    }
+
+    suspend fun deleteFolder(folderId: Long) {
+        dao.deleteFolderSafely(folderId)
+    }
+
+    // --- Video Projects ---
     fun observeProject(projectId: Long): Flow<VideoProjectEntity?> =
         dao.observeProjectById(projectId)
 
@@ -29,7 +55,8 @@ class TranslationRepository(
         videoUri: String,
         durationMs: Long,
         targetLanguage: LanguageOption,
-        result: VideoTranslationResult
+        result: VideoTranslationResult,
+        folderId: Long? = null
     ): Long {
         val project = VideoProjectEntity(
             title = title,
@@ -40,7 +67,8 @@ class TranslationRepository(
             targetLanguageCode = targetLanguage.code,
             targetLanguageName = targetLanguage.arabicName,
             summary = result.summary,
-            cueCount = result.segments.size
+            cueCount = result.segments.size,
+            folderId = folderId
         )
         val cues = result.segments.mapIndexed { index, segment ->
             SubtitleCueEntity(
@@ -53,6 +81,17 @@ class TranslationRepository(
             )
         }
         return dao.insertProjectWithCues(project, cues)
+    }
+
+    suspend fun renameProject(projectId: Long, newTitle: String) {
+        val clean = newTitle.trim()
+        if (clean.isNotEmpty()) {
+            dao.renameProject(projectId, clean)
+        }
+    }
+
+    suspend fun moveProjectToFolder(projectId: Long, folderId: Long?) {
+        dao.moveProjectToFolder(projectId, folderId)
     }
 
     suspend fun updateCueText(cueId: Long, originalText: String, translatedText: String) {
@@ -82,6 +121,7 @@ class TranslationRepository(
         dao.deleteProjectById(projectId)
     }
 
+    // --- Voice Translations ---
     suspend fun saveVoiceTranslation(
         targetLanguage: LanguageOption,
         result: VoiceTranslationResult
@@ -100,5 +140,122 @@ class TranslationRepository(
 
     suspend fun deleteVoiceTranslation(id: Long) {
         dao.deleteVoiceTranslationById(id)
+    }
+
+    // --- Study Studio ---
+    suspend fun createStudyNotebook(
+        title: String,
+        method: StudyMethod = StudyMethod.FOCUSED_SUMMARY,
+        dailyMinutes: Int = 60,
+        totalDays: Int = 5,
+        linkedProjectId: Long? = null
+    ): Long {
+        val now = System.currentTimeMillis()
+        return dao.insertStudyNotebook(
+            StudyNotebookEntity(
+                title = title.trim(),
+                preferredMethod = method.key,
+                dailyMinutes = dailyMinutes,
+                totalDays = totalDays,
+                linkedProjectId = linkedProjectId,
+                createdAt = now,
+                updatedAt = now
+            )
+        )
+    }
+
+    suspend fun getStudyNotebook(notebookId: Long): StudyNotebookEntity? =
+        dao.getStudyNotebookById(notebookId)
+
+    suspend fun updateStudyNotebookConfig(
+        notebookId: Long,
+        title: String,
+        method: StudyMethod,
+        dailyMinutes: Int,
+        totalDays: Int
+    ) {
+        dao.updateStudyNotebookConfig(
+            notebookId = notebookId,
+            title = title.trim(),
+            method = method.key,
+            dailyMinutes = dailyMinutes.coerceIn(15, 480),
+            totalDays = totalDays.coerceIn(1, 30),
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
+    suspend fun deleteStudyNotebook(notebookId: Long) {
+        dao.deleteStudyNotebookById(notebookId)
+    }
+
+    fun observeStudyAttachments(notebookId: Long): Flow<List<StudyAttachmentEntity>> =
+        dao.observeStudyAttachments(notebookId)
+
+    suspend fun getStudyAttachments(notebookId: Long): List<StudyAttachmentEntity> =
+        dao.getStudyAttachments(notebookId)
+
+    suspend fun addStudyAttachment(attachment: StudyAttachmentEntity): Long =
+        dao.insertStudyAttachment(attachment)
+
+    suspend fun deleteStudyAttachment(attachmentId: Long) {
+        dao.deleteStudyAttachmentById(attachmentId)
+    }
+
+    fun observeStudySchedule(notebookId: Long): Flow<List<StudyScheduleItemEntity>> =
+        dao.observeStudySchedule(notebookId)
+
+    suspend fun saveGeneratedStudyPlan(
+        notebookId: Long,
+        plan: GeneratedStudyPlanResult
+    ) {
+        val entities = plan.scheduleTasks.map { task ->
+            StudyScheduleItemEntity(
+                notebookId = notebookId,
+                dayNumber = task.dayNumber,
+                dayLabel = task.dayLabel,
+                timeSlot = task.timeSlot,
+                taskTitle = task.taskTitle,
+                taskDetail = task.taskDetail,
+                durationMinutes = task.durationMinutes,
+                isCompleted = false
+            )
+        }
+        dao.replaceStudySchedule(
+            notebookId = notebookId,
+            summary = plan.summaryMarkdown,
+            keyPoints = plan.keyPointsText,
+            items = entities,
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
+    suspend fun toggleScheduleItemCompleted(itemId: Long, completed: Boolean) {
+        dao.setStudyScheduleItemCompleted(itemId, completed)
+    }
+
+    fun observeStudyMessages(notebookId: Long): Flow<List<StudyMessageEntity>> =
+        dao.observeStudyMessages(notebookId)
+
+    suspend fun getStudyMessages(notebookId: Long): List<StudyMessageEntity> =
+        dao.getStudyMessages(notebookId)
+
+    suspend fun addStudyMessage(
+        notebookId: Long,
+        isUser: Boolean,
+        text: String,
+        isOfflineGenerated: Boolean = false
+    ): Long {
+        return dao.insertStudyMessage(
+            StudyMessageEntity(
+                notebookId = notebookId,
+                isUser = isUser,
+                messageText = text.trim(),
+                isOfflineGenerated = isOfflineGenerated
+            )
+        )
+    }
+
+    suspend fun clearStudyMessages(notebookId: Long) {
+        dao.clearStudyMessagesForNotebook(notebookId)
     }
 }

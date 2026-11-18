@@ -7,8 +7,10 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.outlined.MicNone
+import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -33,6 +35,7 @@ import androidx.navigation.toRoute
 import com.example.R
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.StudioScreen
+import com.example.ui.screens.StudyScreen
 import com.example.ui.screens.VoiceTranslatorScreen
 import com.example.ui.theme.IceSapphire
 import com.example.ui.theme.MidnightSurface
@@ -49,6 +52,9 @@ data object HomeRoute
 data object VoiceRoute
 
 @Serializable
+data object StudyRoute
+
+@Serializable
 data class StudioRoute(val projectId: Long)
 
 @Composable
@@ -59,6 +65,16 @@ fun AppNavigation(
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
     val isInStudio = currentDestination?.hasRoute<StudioRoute>() == true
+
+    val navigateToStudy: () -> Unit = {
+        navController.navigate(StudyRoute) {
+            popUpTo(navController.graph.findStartDestination().id) {
+                saveState = true
+            }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -74,6 +90,7 @@ fun AppNavigation(
                     val isVideoSelected = currentDestination?.hasRoute<HomeRoute>() == true ||
                         currentDestination == null
                     val isVoiceSelected = currentDestination?.hasRoute<VoiceRoute>() == true
+                    val isStudySelected = currentDestination?.hasRoute<StudyRoute>() == true
 
                     NavigationBarItem(
                         selected = isVideoSelected,
@@ -130,6 +147,26 @@ fun AppNavigation(
                         ),
                         modifier = Modifier.testTag("nav_voice_translator")
                     )
+
+                    NavigationBarItem(
+                        selected = isStudySelected,
+                        onClick = navigateToStudy,
+                        icon = {
+                            Icon(
+                                imageVector = if (isStudySelected) Icons.Filled.School else Icons.Outlined.School,
+                                contentDescription = stringResource(R.string.tab_study_studio)
+                            )
+                        },
+                        label = { Text(stringResource(R.string.tab_study_studio)) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = IceSapphire,
+                            selectedTextColor = SilverPure,
+                            indicatorColor = MidnightSurfaceHigh,
+                            unselectedIconColor = SilverMuted,
+                            unselectedTextColor = SilverMuted
+                        ),
+                        modifier = Modifier.testTag("nav_study_studio")
+                    )
                 }
             }
         }
@@ -144,7 +181,8 @@ fun AppNavigation(
                     outerPadding = innerPadding,
                     onOpenProject = { projectId ->
                         navController.navigate(StudioRoute(projectId))
-                    }
+                    },
+                    onOpenStudy = navigateToStudy
                 )
             }
 
@@ -155,12 +193,20 @@ fun AppNavigation(
                 )
             }
 
+            composable<StudyRoute> {
+                StudyScreen(
+                    viewModel = bayanViewModel,
+                    outerPadding = innerPadding
+                )
+            }
+
             composable<StudioRoute> { backStack ->
                 val route: StudioRoute = backStack.toRoute()
                 StudioScreen(
                     projectId = route.projectId,
                     viewModel = bayanViewModel,
-                    onBack = { navController.popBackStack() }
+                    onBack = { navController.popBackStack() },
+                    onOpenStudy = navigateToStudy
                 )
             }
         }

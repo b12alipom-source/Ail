@@ -1,0 +1,792 @@
+package com.example.ui.screens
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Notes
+import androidx.compose.material.icons.outlined.PictureAsPdf
+import androidx.compose.material.icons.outlined.School
+import androidx.compose.material.icons.outlined.VideoLibrary
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.StudyMethod
+import com.example.data.db.StudyAttachmentEntity
+import com.example.data.db.StudyMessageEntity
+import com.example.data.db.StudyNotebookEntity
+import com.example.data.db.StudyScheduleItemEntity
+import com.example.ui.BayanViewModel
+import com.example.ui.theme.CoralError
+import com.example.ui.theme.EmeraldSuccess
+import com.example.ui.theme.IceSapphire
+import com.example.ui.theme.IceSapphireGlow
+import com.example.ui.theme.MidnightBorder
+import com.example.ui.theme.MidnightBorderSubtle
+import com.example.ui.theme.MidnightNavy
+import com.example.ui.theme.MidnightSurface
+import com.example.ui.theme.MidnightSurfaceHigh
+import com.example.ui.theme.MidnightVoid
+import com.example.ui.theme.SilverMetallic
+import com.example.ui.theme.SilverMuted
+import com.example.ui.theme.SilverPure
+
+private enum class StudyWorkspaceTab(val label: String) {
+    SUMMARY("الملخص والنقاط"),
+    SCHEDULE("الجدول الدراسي"),
+    TUTOR("المعلم الذكي")
+}
+
+@Composable
+fun StudyScreen(
+    viewModel: BayanViewModel,
+    outerPadding: PaddingValues
+) {
+    val notebooks by viewModel.studyNotebooks.collectAsStateWithLifecycle()
+    val activeNotebookId by viewModel.activeStudyNotebookId.collectAsStateWithLifecycle()
+    val attachments by viewModel.activeStudyAttachments.collectAsStateWithLifecycle()
+    val scheduleItems by viewModel.activeStudySchedule.collectAsStateWithLifecycle()
+    val messages by viewModel.activeStudyMessages.collectAsStateWithLifecycle()
+    val busyMessage by viewModel.studyBusyMessage.collectAsStateWithLifecycle()
+    val studyError by viewModel.studyError.collectAsStateWithLifecycle()
+    val studyNotice by viewModel.studyNotice.collectAsStateWithLifecycle()
+    val projects by viewModel.projects.collectAsStateWithLifecycle()
+    val offlineEngineMode by viewModel.offlineEngineMode.collectAsStateWithLifecycle()
+
+    LaunchedEffect(notebooks, activeNotebookId) {
+        if (activeNotebookId == null && notebooks.isNotEmpty()) {
+            viewModel.selectStudyNotebook(notebooks.first().id)
+        }
+    }
+
+    val activeNotebook = remember(notebooks, activeNotebookId) {
+        notebooks.firstOrNull { it.id == activeNotebookId } ?: notebooks.firstOrNull()
+    }
+
+    var activeTab by rememberSaveable { mutableStateOf(StudyWorkspaceTab.SUMMARY) }
+    var showCreateNotebookDialog by remember { mutableStateOf(false) }
+    var showAddTextNoteDialog by remember { mutableStateOf(false) }
+    var showLinkVideoSheet by remember { mutableStateOf(false) }
+    var notebookPendingDelete by remember { mutableStateOf<StudyNotebookEntity?>(null) }
+
+    val documentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.attachStudyDocumentUri(uri)
+        }
+    }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.attachStudyPhotoUri(uri)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(MidnightVoid, MidnightNavy, Color(0xFF0D172B))
+                )
+            )
+            .drawBehind {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(IceSapphire.copy(alpha = 0.12f), Color.Transparent),
+                        center = Offset(size.width * 0.25f, size.height * 0.1f),
+                        radius = size.width * 0.7f
+                    ),
+                    center = Offset(size.width * 0.25f, size.height * 0.1f),
+                    radius = size.width * 0.7f
+                )
+            }
+            .padding(outerPadding)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 720.dp)
+                .align(Alignment.TopCenter)
+        ) {
+            // Top Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "مساعد الدراسة الذكي",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = SilverPure,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = if (offlineEngineMode) {
+                            "ملخصات وجدول مخصص • يعمل محلياً أوفلاين"
+                        } else {
+                            "تلخيص PDF وصور وفيديوهات مع جدول وشرح مخصص"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = SilverMuted
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(99.dp),
+                    color = SilverPure,
+                    modifier = Modifier
+                        .testTag("study_new_notebook_button")
+                        .clickable { showCreateNotebookDialog = true }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = "مادة جديدة",
+                            tint = MidnightVoid,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "مادة جديدة",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MidnightVoid
+                        )
+                    }
+                }
+            }
+
+            // Notebook Strip
+            if (notebooks.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    notebooks.forEach { nb ->
+                        val selected = nb.id == activeNotebook?.id
+                        Surface(
+                            shape = RoundedCornerShape(99.dp),
+                            color = if (selected) IceSapphire.copy(alpha = 0.24f) else MidnightSurface,
+                            border = BorderStroke(
+                                1.dp,
+                                if (selected) IceSapphireGlow else MidnightBorderSubtle
+                            ),
+                            modifier = Modifier.clickable { viewModel.selectStudyNotebook(nb.id) }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(start = 12.dp, end = if (selected) 4.dp else 12.dp, top = 7.dp, bottom = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = nb.title,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (selected) SilverPure else SilverMetallic,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (selected) {
+                                    IconButton(
+                                        onClick = { notebookPendingDelete = nb },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.DeleteOutline,
+                                            contentDescription = "حذف المادة",
+                                            tint = SilverMuted,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            AnimatedVisibility(visible = busyMessage != null) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    LinearProgressIndicator(
+                        color = IceSapphire,
+                        trackColor = MidnightBorderSubtle,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    busyMessage?.let { msg ->
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = IceSapphireGlow,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MidnightSurface)
+                                .padding(horizontal = 20.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+
+            studyError?.let { err ->
+                Surface(
+                    color = CoralError.copy(alpha = 0.14f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(err, style = MaterialTheme.typography.bodySmall, color = SilverPure, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { viewModel.dismissStudyError() }) {
+                            Text("إغلاق", color = SilverPure)
+                        }
+                    }
+                }
+            }
+
+            studyNotice?.let { note ->
+                Surface(
+                    color = EmeraldSuccess.copy(alpha = 0.14f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(note, style = MaterialTheme.typography.bodySmall, color = SilverPure, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { viewModel.dismissStudyNotice() }) {
+                            Text("حسناً", color = EmeraldSuccess)
+                        }
+                    }
+                }
+            }
+
+            if (activeNotebook == null) {
+                EmptyStudyOnboarding(
+                    projectsCount = projects.size,
+                    firstProjectTitle = projects.firstOrNull()?.title,
+                    onCreateNotebook = { showCreateNotebookDialog = true },
+                    onStudyFirstVideo = {
+                        projects.firstOrNull()?.let { viewModel.openOrCreateStudyFromProject(it.id) }
+                    },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(20.dp)
+                )
+            } else {
+                ActiveNotebookWorkspace(
+                    notebook = activeNotebook,
+                    attachments = attachments,
+                    scheduleItems = scheduleItems,
+                    messages = messages,
+                    isBusy = busyMessage != null,
+                    activeTab = activeTab,
+                    onSelectTab = { activeTab = it },
+                    onPickDocument = {
+                        documentPickerLauncher.launch(arrayOf("application/pdf", "text/*"))
+                    },
+                    onPickPhoto = {
+                        photoPickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    },
+                    onOpenAddTextNote = { showAddTextNoteDialog = true },
+                    onOpenLinkVideo = { showLinkVideoSheet = true },
+                    onRemoveAttachment = { viewModel.removeStudyAttachment(it) },
+                    onGeneratePlan = { method, mins, days ->
+                        viewModel.generateStudySummaryAndSchedule(method, mins, days)
+                    },
+                    onToggleScheduleTask = { id, completed ->
+                        viewModel.toggleStudyScheduleTask(id, completed)
+                    },
+                    onSendQuestion = { viewModel.sendStudyTutorQuestion(it) },
+                    onClearChat = { viewModel.clearStudyChat() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                )
+            }
+        }
+    }
+
+    if (showCreateNotebookDialog) {
+        CreateNotebookDialog(
+            onDismiss = { showCreateNotebookDialog = false },
+            onCreate = { title, method, mins, days ->
+                viewModel.createStudyNotebook(title, method, mins, days)
+                showCreateNotebookDialog = false
+            }
+        )
+    }
+
+    if (showAddTextNoteDialog) {
+        AddTextNoteDialog(
+            onDismiss = { showAddTextNoteDialog = false },
+            onSave = { title, body ->
+                viewModel.attachStudyTextNote(title, body)
+                showAddTextNoteDialog = false
+            }
+        )
+    }
+
+    if (showLinkVideoSheet) {
+        LinkTranslatedVideoSheet(
+            projects = projects,
+            onSelectProject = { proj ->
+                viewModel.attachTranslatedProjectToStudy(proj.id)
+                showLinkVideoSheet = false
+            },
+            onDismiss = { showLinkVideoSheet = false }
+        )
+    }
+
+    notebookPendingDelete?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { notebookPendingDelete = null },
+            containerColor = MidnightSurfaceHigh,
+            titleContentColor = SilverPure,
+            textContentColor = SilverMetallic,
+            title = { Text("حذف مادة الدراسة؟") },
+            text = { Text("سيتم حذف «${pending.title}» ومرفقاتها وجدولها الدراسي.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteStudyNotebook(pending.id)
+                        notebookPendingDelete = null
+                    }
+                ) {
+                    Text("حذف", color = CoralError, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { notebookPendingDelete = null }) {
+                    Text("إلغاء", color = SilverPure)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun EmptyStudyOnboarding(
+    projectsCount: Int,
+    firstProjectTitle: String?,
+    onCreateNotebook: () -> Unit,
+    onStudyFirstVideo: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MidnightSurface,
+            border = BorderStroke(1.dp, MidnightBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MidnightSurfaceHigh,
+                    border = BorderStroke(1.dp, MidnightBorder),
+                    modifier = Modifier.size(64.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Outlined.School,
+                            contentDescription = null,
+                            tint = IceSapphireGlow,
+                            modifier = Modifier.size(30.dp)
+                        )
+                    }
+                }
+                Text(
+                    text = "مدرّبك الدراسي المخصص",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = SilverPure,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "أرفق ملفات PDF أو صور المحاضرات أو الفيديوهات المترجمة، واختر أسلوب الفهم والوقت المتاح ليصنع لك «بيان» ملخصاً وجدولاً يومياً ويجيب على أسئلتك.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SilverMetallic
+                )
+                Button(
+                    onClick = onCreateNotebook,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = SilverPure,
+                        contentColor = MidnightVoid
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .testTag("create_study_notebook_cta")
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("إنشاء مادة دراسية جديدة", fontWeight = FontWeight.Bold)
+                }
+                if (projectsCount > 0 && firstProjectTitle != null) {
+                    TextButton(onClick = onStudyFirstVideo) {
+                        Text(
+                            text = "أو ابدأ الدراسة من الفيديو: $firstProjectTitle",
+                            color = IceSapphireGlow
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActiveNotebookWorkspace(
+    notebook: StudyNotebookEntity,
+    attachments: List<StudyAttachmentEntity>,
+    scheduleItems: List<StudyScheduleItemEntity>,
+    messages: List<StudyMessageEntity>,
+    isBusy: Boolean,
+    activeTab: StudyWorkspaceTab,
+    onSelectTab: (StudyWorkspaceTab) -> Unit,
+    onPickDocument: () -> Unit,
+    onPickPhoto: () -> Unit,
+    onOpenAddTextNote: () -> Unit,
+    onOpenLinkVideo: () -> Unit,
+    onRemoveAttachment: (StudyAttachmentEntity) -> Unit,
+    onGeneratePlan: (StudyMethod, Int, Int) -> Unit,
+    onToggleScheduleTask: (Long, Boolean) -> Unit,
+    onSendQuestion: (String) -> Unit,
+    onClearChat: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var selectedMethod by remember(notebook.id, notebook.preferredMethod) {
+        mutableStateOf(StudyMethod.fromKey(notebook.preferredMethod))
+    }
+    var selectedDailyMinutes by remember(notebook.id, notebook.dailyMinutes) {
+        mutableIntStateOf(notebook.dailyMinutes)
+    }
+    var selectedTotalDays by remember(notebook.id, notebook.totalDays) {
+        mutableIntStateOf(notebook.totalDays)
+    }
+
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Attachments + Method Config Card
+        item {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MidnightSurface,
+                border = BorderStroke(1.dp, MidnightBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "1. مرفقات المادة (${attachments.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = SilverPure
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        AttachActionChip(Icons.Outlined.PictureAsPdf, "ملف PDF / نص", onPickDocument)
+                        AttachActionChip(Icons.Outlined.Image, "صورة درس", onPickPhoto)
+                        AttachActionChip(Icons.Outlined.Notes, "ملاحظة نصية", onOpenAddTextNote)
+                        AttachActionChip(Icons.Outlined.VideoLibrary, "فيديو مترجم", onOpenLinkVideo)
+                    }
+
+                    if (attachments.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            attachments.forEach { att ->
+                                StudyAttachmentChip(
+                                    attachment = att,
+                                    onRemove = { onRemoveAttachment(att) }
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "2. طريقة الفهم والجدول المخصص",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = SilverPure
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        StudyMethod.entries.forEach { method ->
+                            val selected = method == selectedMethod
+                            Surface(
+                                shape = RoundedCornerShape(99.dp),
+                                color = if (selected) IceSapphire.copy(alpha = 0.22f) else MidnightNavy,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (selected) IceSapphireGlow else MidnightBorderSubtle
+                                ),
+                                modifier = Modifier.clickable { selectedMethod = method }
+                            ) {
+                                Text(
+                                    text = method.arabicLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (selected) SilverPure else SilverMuted,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        listOf(30, 60, 90, 120).forEach { mins ->
+                            val selected = selectedDailyMinutes == mins
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (selected) SilverPure else MidnightNavy,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { selectedDailyMinutes = mins }
+                            ) {
+                                Text(
+                                    text = "$mins د/يوم",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) MidnightVoid else SilverMetallic,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                        listOf(3, 5, 7).forEach { days ->
+                            val selected = selectedTotalDays == days
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (selected) IceSapphire else MidnightNavy,
+                                modifier = Modifier
+                                    .weight(0.9f)
+                                    .clickable { selectedTotalDays = days }
+                            ) {
+                                Text(
+                                    text = "$days أيام",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) MidnightVoid else SilverMetallic,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+
+                    Button(
+                        enabled = !isBusy,
+                        onClick = {
+                            onGeneratePlan(selectedMethod, selectedDailyMinutes, selectedTotalDays)
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = SilverPure,
+                            contentColor = MidnightVoid
+                        ),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("generate_study_plan_button")
+                    ) {
+                        Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "توليد الملخص والجدول الدراسي",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
+        // Sub-Tabs
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                StudyWorkspaceTab.entries.forEach { tab ->
+                    val selected = tab == activeTab
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (selected) SilverPure else MidnightSurface,
+                        border = BorderStroke(1.dp, if (selected) SilverPure else MidnightBorderSubtle),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("study_tab_${tab.name.lowercase()}")
+                            .clickable { onSelectTab(tab) }
+                    ) {
+                        Text(
+                            text = tab.label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (selected) MidnightVoid else SilverMetallic,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Sub-tab Content
+        item {
+            when (activeTab) {
+                StudyWorkspaceTab.SUMMARY -> StudySummaryTabContent(
+                    notebook = notebook,
+                    onGenerateClick = {
+                        onGeneratePlan(selectedMethod, selectedDailyMinutes, selectedTotalDays)
+                    }
+                )
+                StudyWorkspaceTab.SCHEDULE -> StudyScheduleTabContent(
+                    scheduleItems = scheduleItems,
+                    onToggleCompleted = onToggleScheduleTask,
+                    onGenerateClick = {
+                        onGeneratePlan(selectedMethod, selectedDailyMinutes, selectedTotalDays)
+                    }
+                )
+                StudyWorkspaceTab.TUTOR -> StudyTutorChatTabContent(
+                    messages = messages,
+                    isBusy = isBusy,
+                    onSendQuestion = onSendQuestion,
+                    onClearChat = onClearChat
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachActionChip(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MidnightSurfaceHigh,
+        border = BorderStroke(1.dp, MidnightBorder),
+        modifier = Modifier.clickable { onClick() }
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = IceSapphireGlow,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = SilverPure
+            )
+        }
+    }
+}

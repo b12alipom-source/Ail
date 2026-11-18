@@ -38,6 +38,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -48,18 +50,27 @@ import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.DriveFileMove
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -87,15 +98,18 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.ai.AppCheckDiagnosticState
+import com.example.data.FolderAccent
 import com.example.data.LanguageOption
 import com.example.data.SupportedLanguages
 import com.example.data.TranslationStyle
+import com.example.data.db.ProjectFolderEntity
 import com.example.data.db.VideoProjectEntity
 import com.example.export.SubtitleExporter
 import com.example.ui.BayanViewModel
 import com.example.ui.ProcessingUiState
 import com.example.ui.components.CloudAndApkSheet
 import com.example.ui.components.LanguagePickerSheet
+import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CoralError
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.IceSapphire
@@ -114,10 +128,14 @@ import com.example.ui.theme.SilverPure
 fun HomeScreen(
     viewModel: BayanViewModel,
     outerPadding: PaddingValues,
-    onOpenProject: (Long) -> Unit
+    onOpenProject: (Long) -> Unit,
+    onOpenStudy: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val projects by viewModel.projects.collectAsStateWithLifecycle()
+    val allProjects by viewModel.projects.collectAsStateWithLifecycle()
+    val filteredProjects by viewModel.filteredProjects.collectAsStateWithLifecycle()
+    val folders by viewModel.folders.collectAsStateWithLifecycle()
+    val selectedFolderId by viewModel.selectedFolderId.collectAsStateWithLifecycle()
     val sourceLanguage by viewModel.sourceLanguage.collectAsStateWithLifecycle()
     val targetLanguage by viewModel.targetLanguage.collectAsStateWithLifecycle()
     val translationStyle by viewModel.translationStyle.collectAsStateWithLifecycle()
@@ -145,6 +163,11 @@ fun HomeScreen(
     var showSourcePicker by remember { mutableStateOf(false) }
     var showTargetPicker by remember { mutableStateOf(false) }
     var showCloudInfoSheet by remember { mutableStateOf(false) }
+    var showCreateFolderDialog by remember { mutableStateOf(false) }
+    var folderPendingEdit by remember { mutableStateOf<ProjectFolderEntity?>(null) }
+    var folderPendingDelete by remember { mutableStateOf<ProjectFolderEntity?>(null) }
+    var projectPendingRename by remember { mutableStateOf<VideoProjectEntity?>(null) }
+    var projectPendingMove by remember { mutableStateOf<VideoProjectEntity?>(null) }
     var projectPendingDelete by remember { mutableStateOf<VideoProjectEntity?>(null) }
 
     val videoPickerLauncher = rememberLauncherForActivityResult(
@@ -264,6 +287,19 @@ fun HomeScreen(
                 }
 
                 item {
+                    FolderOrganizerStrip(
+                        folders = folders,
+                        allProjects = allProjects,
+                        selectedFolderId = selectedFolderId,
+                        onSelectFolder = { viewModel.selectFolder(it) },
+                        onCreateFolderClick = { showCreateFolderDialog = true },
+                        onEditFolderClick = { folderPendingEdit = it },
+                        onDeleteFolderClick = { folderPendingDelete = it }
+                    )
+                }
+
+                item {
+                    val activeFolderName = folders.firstOrNull { it.id == selectedFolderId }?.name
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -280,14 +316,14 @@ fun HomeScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = stringResource(R.string.recent_translations_title),
+                                text = activeFolderName ?: stringResource(R.string.recent_translations_title),
                                 style = MaterialTheme.typography.titleMedium,
                                 color = SilverPure
                             )
                         }
-                        if (projects.isNotEmpty()) {
+                        if (filteredProjects.isNotEmpty()) {
                             Text(
-                                text = "${projects.size} مقاطع",
+                                text = "${filteredProjects.size} مقاطع",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = SilverMuted
                             )
@@ -295,15 +331,29 @@ fun HomeScreen(
                     }
                 }
 
-                if (projects.isEmpty()) {
+                if (filteredProjects.isEmpty()) {
                     item {
-                        EmptyHistoryOnboardingCard()
+                        if (selectedFolderId != null && allProjects.isNotEmpty()) {
+                            EmptyFolderCard(
+                                onShowAllClick = { viewModel.selectFolder(null) }
+                            )
+                        } else {
+                            EmptyHistoryOnboardingCard()
+                        }
                     }
                 } else {
-                    items(projects, key = { it.id }) { project ->
+                    items(filteredProjects, key = { it.id }) { project ->
+                        val folderName = folders.firstOrNull { it.id == project.folderId }?.name
                         ProjectHistoryCard(
                             project = project,
+                            folderName = folderName,
                             onClick = { onOpenProject(project.id) },
+                            onRenameClick = { projectPendingRename = project },
+                            onMoveToFolderClick = { projectPendingMove = project },
+                            onStudyClick = {
+                                viewModel.openOrCreateStudyFromProject(project.id)
+                                onOpenStudy()
+                            },
                             onDeleteClick = { projectPendingDelete = project }
                         )
                     }
@@ -370,6 +420,83 @@ fun HomeScreen(
             selectedCode = targetLanguage.code,
             onSelect = { viewModel.setTargetLanguage(it) },
             onDismiss = { showTargetPicker = false }
+        )
+    }
+
+    if (showCreateFolderDialog) {
+        FolderEditorDialog(
+            title = "إنشاء مجلد جديد",
+            initialName = "",
+            initialAccentKey = FolderAccent.SAPPHIRE.key,
+            confirmLabel = "إنشاء",
+            onDismiss = { showCreateFolderDialog = false },
+            onSave = { name, accent ->
+                viewModel.createFolder(name, accent)
+                showCreateFolderDialog = false
+            }
+        )
+    }
+
+    folderPendingEdit?.let { editing ->
+        FolderEditorDialog(
+            title = "تعديل المجلد",
+            initialName = editing.name,
+            initialAccentKey = editing.accentKey,
+            confirmLabel = "حفظ",
+            onDismiss = { folderPendingEdit = null },
+            onSave = { name, accent ->
+                viewModel.renameFolder(editing.id, name, accent)
+                folderPendingEdit = null
+            }
+        )
+    }
+
+    folderPendingDelete?.let { pendingFolder ->
+        AlertDialog(
+            onDismissRequest = { folderPendingDelete = null },
+            containerColor = MidnightSurfaceHigh,
+            titleContentColor = SilverPure,
+            textContentColor = SilverMetallic,
+            title = { Text("حذف المجلد؟") },
+            text = { Text("سيتم حذف مجلد «${pendingFolder.name}» فقط مع إبقاء كافة المقاطع المترجمة بأمان في السجل العام.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteFolder(pendingFolder.id)
+                        folderPendingDelete = null
+                    }
+                ) {
+                    Text("حذف المجلد", color = CoralError, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { folderPendingDelete = null }) {
+                    Text("إلغاء", color = SilverPure)
+                }
+            }
+        )
+    }
+
+    projectPendingRename?.let { targetProject ->
+        RenameHomeProjectDialog(
+            currentTitle = targetProject.title,
+            onDismiss = { projectPendingRename = null },
+            onSave = { newTitle ->
+                viewModel.renameProject(targetProject.id, newTitle)
+                projectPendingRename = null
+            }
+        )
+    }
+
+    projectPendingMove?.let { targetProject ->
+        MoveProjectToFolderDialog(
+            project = targetProject,
+            folders = folders,
+            onDismiss = { projectPendingMove = null },
+            onSelectFolder = { chosenFolderId ->
+                viewModel.moveProjectToFolder(targetProject.id, chosenFolderId)
+                projectPendingMove = null
+            }
         )
     }
 
@@ -787,9 +914,15 @@ private fun EmptyHistoryOnboardingCard() {
 @Composable
 private fun ProjectHistoryCard(
     project: VideoProjectEntity,
+    folderName: String?,
     onClick: () -> Unit,
+    onRenameClick: () -> Unit,
+    onMoveToFolderClick: () -> Unit,
+    onStudyClick: () -> Unit,
     onDeleteClick: () -> Unit
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
+
     Surface(
         shape = RoundedCornerShape(18.dp),
         color = MidnightSurface,
@@ -802,7 +935,7 @@ private fun ProjectHistoryCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Surface(
@@ -864,6 +997,33 @@ private fun ProjectHistoryCard(
                         color = SilverMuted
                     )
                 }
+                if (folderName != null) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MidnightSurfaceHigh,
+                        border = BorderStroke(1.dp, MidnightBorderSubtle)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.FolderOpen,
+                                contentDescription = null,
+                                tint = IceSapphireGlow,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text(
+                                text = folderName,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SilverMetallic,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
                 if (project.summary.isNotBlank()) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
@@ -876,18 +1036,58 @@ private fun ProjectHistoryCard(
                 }
             }
 
-            IconButton(
-                onClick = onDeleteClick,
-                modifier = Modifier
-                    .size(48.dp)
-                    .testTag("delete_project_${project.id}")
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.DeleteOutline,
-                    contentDescription = stringResource(R.string.delete_project_desc),
-                    tint = SilverMuted,
-                    modifier = Modifier.size(20.dp)
-                )
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("project_menu_${project.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreVert,
+                        contentDescription = "خيارات المقطع",
+                        tint = SilverMetallic,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                    containerColor = MidnightSurfaceHigh
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("تسمية المقطع", color = SilverPure) },
+                        leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, tint = IceSapphireGlow) },
+                        onClick = {
+                            menuExpanded = false
+                            onRenameClick()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("نقل إلى مجلد", color = SilverPure) },
+                        leadingIcon = { Icon(Icons.Outlined.DriveFileMove, contentDescription = null, tint = IceSapphireGlow) },
+                        onClick = {
+                            menuExpanded = false
+                            onMoveToFolderClick()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("إرسال لمساعد الدراسة", color = SilverPure) },
+                        leadingIcon = { Icon(Icons.Outlined.School, contentDescription = null, tint = EmeraldSuccess) },
+                        onClick = {
+                            menuExpanded = false
+                            onStudyClick()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("حذف المقطع", color = CoralError) },
+                        leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null, tint = CoralError) },
+                        onClick = {
+                            menuExpanded = false
+                            onDeleteClick()
+                        }
+                    )
+                }
             }
         }
     }

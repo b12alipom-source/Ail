@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.bayan.vxqmrt"
     minSdk = 24
     targetSdk = 36
-    versionCode = 9
-    versionName = "3.2"
+    versionCode = 10
+    versionName = "4.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -127,6 +127,7 @@ dependencies {
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.mlkit.translate)
   implementation(libs.mlkit.language.id)
+  implementation(libs.mlkit.text.recognition)
   implementation(libs.jna) { artifact { type = "aar" } }
   implementation(libs.vosk.android) { artifact { type = "aar" } }
   // implementation(libs.logging.interceptor)

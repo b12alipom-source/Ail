@@ -1,10 +1,18 @@
 package com.example.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -34,9 +42,12 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.IosShare
+import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.AlertDialog
@@ -60,6 +71,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -114,13 +126,16 @@ import kotlinx.coroutines.delay
 fun StudioScreen(
     projectId: Long,
     viewModel: BayanViewModel,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenStudy: () -> Unit = {}
 ) {
     val studioFlow = remember(projectId) { viewModel.observeStudioState(projectId) }
     val uiState by studioFlow.collectAsStateWithLifecycle()
 
     var showExportSheet by remember { mutableStateOf(false) }
     var showTargetLangPicker by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var isFullscreen by rememberSaveable { mutableStateOf(false) }
     var cueToEdit by remember { mutableStateOf<SubtitleCueEntity?>(null) }
 
     val relinkVideoLauncher = rememberLauncherForActivityResult(
@@ -132,8 +147,8 @@ fun StudioScreen(
     }
 
     Scaffold(
-        containerColor = MidnightNavy,
-        contentWindowInsets = WindowInsets.safeDrawing
+        containerColor = if (isFullscreen) MidnightVoid else MidnightNavy,
+        contentWindowInsets = if (isFullscreen) WindowInsets(0, 0, 0, 0) else WindowInsets.safeDrawing
     ) { innerPadding ->
         when (val state = uiState) {
             StudioUiState.Loading -> {
@@ -177,10 +192,18 @@ fun StudioScreen(
             is StudioUiState.Ready -> {
                 StudioReadyContent(
                     state = state,
+                    isFullscreen = isFullscreen,
+                    onFullscreenChange = { isFullscreen = it },
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(innerPadding),
+                        .then(if (isFullscreen) Modifier else Modifier.padding(innerPadding)),
                     onBack = onBack,
+                    onRenameProject = { showRenameDialog = true },
+                    onSendToStudy = {
+                        isFullscreen = false
+                        viewModel.openOrCreateStudyFromProject(projectId)
+                        onOpenStudy()
+                    },
                     onOpenExport = { showExportSheet = true },
                     onOpenLanguageSwitch = { showTargetLangPicker = true },
                     onPolishTranslation = { viewModel.polishStudioTranslation(projectId) },
@@ -218,6 +241,17 @@ fun StudioScreen(
                     )
                 }
 
+                if (showRenameDialog) {
+                    RenameStudioProjectDialog(
+                        currentTitle = state.project.title,
+                        onDismiss = { showRenameDialog = false },
+                        onSave = { newTitle ->
+                            viewModel.renameProject(projectId, newTitle)
+                            showRenameDialog = false
+                        }
+                    )
+                }
+
                 cueToEdit?.let { editing ->
                     EditCueDialog(
                         cue = editing,
@@ -237,8 +271,12 @@ fun StudioScreen(
 @Composable
 private fun StudioReadyContent(
     state: StudioUiState.Ready,
+    isFullscreen: Boolean,
+    onFullscreenChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
     onBack: () -> Unit,
+    onRenameProject: () -> Unit,
+    onSendToStudy: () -> Unit,
     onOpenExport: () -> Unit,
     onOpenLanguageSwitch: () -> Unit,
     onPolishTranslation: () -> Unit,
@@ -254,6 +292,35 @@ private fun StudioReadyContent(
     val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var isVideoUnavailable by remember(state.project.videoUri) { mutableStateOf(false) }
+
+    BackHandler(enabled = isFullscreen) {
+        onFullscreenChange(false)
+    }
+
+    DisposableEffect(isFullscreen, context, view) {
+        val activity = context.findActivity()
+        if (activity != null) {
+            val window = activity.window
+            val controller = WindowCompat.getInsetsController(window, view)
+            if (isFullscreen) {
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                controller.systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+            } else {
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+        onDispose {
+            val act = context.findActivity()
+            if (act != null && !act.isChangingConfigurations) {
+                act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                WindowCompat.getInsetsController(act.window, view)
+                    .show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+    }
 
     DisposableEffect(view, isVideoUnavailable, state.isReTranslating) {
         val shouldKeepAwake = !isVideoUnavailable || state.isReTranslating
@@ -316,7 +383,7 @@ private fun StudioReadyContent(
     val listState = rememberLazyListState()
     LaunchedEffect(state.activeCueIndex) {
         val index = state.activeCueIndex
-        if (index >= 0 && exoPlayer.isPlaying) {
+        if (index >= 0 && exoPlayer.isPlaying && !isFullscreen) {
             val visibleItems = listState.layoutInfo.visibleItemsInfo
             val isVisible = visibleItems.any { it.index == index }
             if (!isVisible) {
@@ -327,11 +394,37 @@ private fun StudioReadyContent(
 
     val activeCue = state.cues.getOrNull(state.activeCueIndex)
 
+    if (isFullscreen) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(MidnightVoid)
+        ) {
+            VideoPlayerCard(
+                exoPlayer = exoPlayer,
+                isVideoUnavailable = isVideoUnavailable,
+                activeCue = activeCue,
+                displayMode = state.displayMode,
+                fontScale = state.subtitleFontScale,
+                isFullscreen = true,
+                title = state.project.title,
+                onToggleFullscreen = { onFullscreenChange(false) },
+                onDisplayModeChange = onDisplayModeChange,
+                onFontScaleAdjust = onFontScaleAdjust,
+                onRelinkVideo = onRelinkVideo,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        return
+    }
+
     Column(modifier = modifier) {
         StudioTopBar(
             title = state.project.title,
             targetLanguageName = state.project.targetLanguageName,
             onBack = onBack,
+            onRenameProject = onRenameProject,
+            onSendToStudy = onSendToStudy,
             onOpenLanguageSwitch = onOpenLanguageSwitch,
             onOpenExport = onOpenExport
         )
@@ -422,6 +515,11 @@ private fun StudioReadyContent(
                             activeCue = activeCue,
                             displayMode = state.displayMode,
                             fontScale = state.subtitleFontScale,
+                            isFullscreen = false,
+                            title = state.project.title,
+                            onToggleFullscreen = { onFullscreenChange(true) },
+                            onDisplayModeChange = onDisplayModeChange,
+                            onFontScaleAdjust = onFontScaleAdjust,
                             onRelinkVideo = onRelinkVideo
                         )
                         SubtitleControlsToolbar(
@@ -475,6 +573,11 @@ private fun StudioReadyContent(
                         activeCue = activeCue,
                         displayMode = state.displayMode,
                         fontScale = state.subtitleFontScale,
+                        isFullscreen = false,
+                        title = state.project.title,
+                        onToggleFullscreen = { onFullscreenChange(true) },
+                        onDisplayModeChange = onDisplayModeChange,
+                        onFontScaleAdjust = onFontScaleAdjust,
                         onRelinkVideo = onRelinkVideo
                     )
 
@@ -520,6 +623,8 @@ private fun StudioTopBar(
     title: String,
     targetLanguageName: String,
     onBack: () -> Unit,
+    onRenameProject: () -> Unit,
+    onSendToStudy: () -> Unit,
     onOpenLanguageSwitch: () -> Unit,
     onOpenExport: () -> Unit
 ) {
@@ -542,16 +647,44 @@ private fun StudioTopBar(
             )
         }
 
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-            color = SilverPure,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        Row(
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = 4.dp)
-        )
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { onRenameProject() }
+                .padding(horizontal = 6.dp, vertical = 10.dp)
+                .testTag("studio_rename_project_button"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = SilverPure,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            Icon(
+                imageVector = Icons.Outlined.Edit,
+                contentDescription = "تسمية المقطع",
+                tint = SilverMuted,
+                modifier = Modifier.size(15.dp)
+            )
+        }
+
+        IconButton(
+            onClick = onSendToStudy,
+            modifier = Modifier
+                .size(48.dp)
+                .testTag("studio_open_study_button")
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.School,
+                contentDescription = "إرسال لمساعد الدراسة",
+                tint = IceSapphireGlow
+            )
+        }
 
         Surface(
             shape = RoundedCornerShape(99.dp),
@@ -562,7 +695,7 @@ private fun StudioTopBar(
                 .clickable { onOpenLanguageSwitch() }
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
@@ -571,7 +704,7 @@ private fun StudioTopBar(
                     tint = IceSapphireGlow,
                     modifier = Modifier.size(16.dp)
                 )
-                Spacer(modifier = Modifier.width(6.dp))
+                Spacer(modifier = Modifier.width(5.dp))
                 Text(
                     text = targetLanguageName,
                     style = MaterialTheme.typography.labelMedium,
@@ -580,7 +713,7 @@ private fun StudioTopBar(
             }
         }
 
-        Spacer(modifier = Modifier.width(6.dp))
+        Spacer(modifier = Modifier.width(4.dp))
 
         IconButton(
             onClick = onOpenExport,
@@ -605,20 +738,33 @@ private fun VideoPlayerCard(
     activeCue: SubtitleCueEntity?,
     displayMode: SubtitleDisplayMode,
     fontScale: Float,
-    onRelinkVideo: () -> Unit
+    isFullscreen: Boolean,
+    title: String,
+    onToggleFullscreen: () -> Unit,
+    onDisplayModeChange: (SubtitleDisplayMode) -> Unit,
+    onFontScaleAdjust: (Float) -> Unit,
+    onRelinkVideo: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = MidnightVoid,
-        border = BorderStroke(1.dp, MidnightBorder),
-        modifier = Modifier
+    val cardShape = if (isFullscreen) RoundedCornerShape(0.dp) else RoundedCornerShape(20.dp)
+    val baseModifier = if (isFullscreen) {
+        modifier.fillMaxSize()
+    } else {
+        modifier
             .fillMaxWidth()
             .aspectRatio(16f / 9f)
+    }
+
+    Surface(
+        shape = cardShape,
+        color = MidnightVoid,
+        border = if (isFullscreen) null else BorderStroke(1.dp, MidnightBorder),
+        modifier = baseModifier
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(RoundedCornerShape(20.dp))
+                .clip(cardShape)
         ) {
             if (isVideoUnavailable) {
                 Column(
@@ -677,11 +823,145 @@ private fun VideoPlayerCard(
                     LiveSubtitleOverlay(
                         cue = activeCue,
                         displayMode = displayMode,
-                        fontScale = fontScale,
+                        fontScale = if (isFullscreen) fontScale * 1.15f else fontScale,
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .padding(start = 14.dp, end = 14.dp, bottom = 52.dp)
+                            .padding(
+                                start = if (isFullscreen) 32.dp else 14.dp,
+                                end = if (isFullscreen) 32.dp else 14.dp,
+                                bottom = if (isFullscreen) 78.dp else 52.dp
+                            )
                     )
+                }
+            }
+
+            if (isFullscreen) {
+                FullscreenOverlayHud(
+                    title = title,
+                    displayMode = displayMode,
+                    onDisplayModeChange = onDisplayModeChange,
+                    onFontScaleAdjust = onFontScaleAdjust,
+                    onExitFullscreen = onToggleFullscreen,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                )
+            } else if (!isVideoUnavailable) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MidnightVoid.copy(alpha = 0.72f),
+                    border = BorderStroke(1.dp, SilverPure.copy(alpha = 0.22f)),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(10.dp)
+                ) {
+                    IconButton(
+                        onClick = onToggleFullscreen,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("studio_fullscreen_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Fullscreen,
+                            contentDescription = "ملء الشاشة بالعرض",
+                            tint = SilverPure
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FullscreenOverlayHud(
+    title: String,
+    displayMode: SubtitleDisplayMode,
+    onDisplayModeChange: (SubtitleDisplayMode) -> Unit,
+    onFontScaleAdjust: (Float) -> Unit,
+    onExitFullscreen: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MidnightVoid.copy(alpha = 0.76f),
+        border = BorderStroke(1.dp, SilverPure.copy(alpha = 0.16f)),
+        modifier = modifier
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            IconButton(
+                onClick = onExitFullscreen,
+                modifier = Modifier
+                    .size(48.dp)
+                    .testTag("studio_exit_fullscreen_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.FullscreenExit,
+                    contentDescription = "الخروج من ملء الشاشة",
+                    tint = SilverPure
+                )
+            }
+
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                color = SilverPure,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+
+            listOf(
+                SubtitleDisplayMode.BILINGUAL to "مزدوج",
+                SubtitleDisplayMode.TRANSLATED_ONLY to "مترجم",
+                SubtitleDisplayMode.ORIGINAL_ONLY to "أصلي"
+            ).forEach { (mode, label) ->
+                val selected = displayMode == mode
+                Surface(
+                    shape = RoundedCornerShape(99.dp),
+                    color = if (selected) IceSapphire.copy(alpha = 0.28f) else MidnightSurface.copy(alpha = 0.7f),
+                    border = BorderStroke(1.dp, if (selected) IceSapphireGlow else MidnightBorderSubtle),
+                    modifier = Modifier.clickable { onDisplayModeChange(mode) }
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (selected) SilverPure else SilverMetallic,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MidnightSurface.copy(alpha = 0.8f),
+                border = BorderStroke(1.dp, MidnightBorderSubtle)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(width = 38.dp, height = 36.dp)
+                            .clickable { onFontScaleAdjust(-0.1f) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(text = "A-", style = MaterialTheme.typography.labelSmall, color = SilverMetallic)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(width = 38.dp, height = 36.dp)
+                            .clickable { onFontScaleAdjust(0.1f) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(text = "A+", style = MaterialTheme.typography.labelSmall, color = SilverPure)
+                    }
                 }
             }
         }
@@ -995,6 +1275,53 @@ private fun TranscriptCueList(
 }
 
 @Composable
+private fun RenameStudioProjectDialog(
+    currentTitle: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var draft by remember(currentTitle) { mutableStateOf(currentTitle) }
+    val textFieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = SilverPure,
+        unfocusedTextColor = SilverMetallic,
+        focusedBorderColor = IceSapphire,
+        unfocusedBorderColor = MidnightBorder,
+        focusedLabelColor = IceSapphireGlow,
+        unfocusedLabelColor = SilverMuted
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MidnightSurfaceHigh,
+        titleContentColor = SilverPure,
+        title = { Text("تسمية المقطع") },
+        text = {
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                singleLine = true,
+                label = { Text("الاسم الجديد للمقطع") },
+                colors = textFieldColors,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(draft) },
+                enabled = draft.isNotBlank()
+            ) {
+                Text("حفظ", color = IceSapphireGlow, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("إلغاء", color = SilverMuted)
+            }
+        }
+    )
+}
+
+@Composable
 private fun EditCueDialog(
     cue: SubtitleCueEntity,
     onDismiss: () -> Unit,
@@ -1049,4 +1376,10 @@ private fun EditCueDialog(
             }
         }
     )
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

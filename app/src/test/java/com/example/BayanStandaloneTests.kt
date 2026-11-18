@@ -2,6 +2,7 @@ package com.example
 
 import com.example.ai.extractErrorFromDummyToken
 import com.example.ai.isThrottleDetail
+import com.example.data.StudyMethod
 import com.example.export.SubtitleParser
 import com.example.media.VoskCatalogItem
 import com.example.media.VoskTimedWord
@@ -12,6 +13,9 @@ import com.example.media.parseVoskResultJson
 import com.example.media.segmentActiveSpeechWindows
 import com.example.media.selectBestCatalogModelForLanguage
 import com.example.media.stripTopArchiveDirectory
+import com.example.study.answerStudyQuestionOffline
+import com.example.study.buildOfflineStudyPlan
+import com.example.study.parseStudyPlanJson
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -198,5 +202,70 @@ class BayanStandaloneTests {
         val root = File("/tmp/bayan-vosk-test")
         assertTrue(isSafeZipDestination(root, File(root, "conf/mfcc.conf")))
         assertFalse(isSafeZipDestination(root, File(root, "../evil.sh")))
+    }
+
+    @Test
+    fun buildOfflineStudyPlan_generatesTailoredSummaryAndDailyTasks() {
+        val attachments = listOf(
+            "ملخص الخلية.pdf" to "الميتوكوندريا مسؤولة عن إنتاج الطاقة الخلوية ATP. الغشاء البلازمي ينظم دخول وخروج المواد.",
+            "فيديو الشرح" to "الانقسام المتساوي يحافظ على العدد الصبغي للخلية."
+        )
+        val plan = buildOfflineStudyPlan(
+            notebookTitle = "أحياء الفصل الأول",
+            method = StudyMethod.QA_DRILLS,
+            dailyMinutes = 90,
+            totalDays = 3,
+            attachmentTexts = attachments
+        )
+        assertTrue(plan.isOfflineFallback)
+        assertTrue(plan.summaryMarkdown.contains("أحياء الفصل الأول"))
+        assertTrue(plan.keyPointsText.contains("الميتوكوندريا"))
+        // 2 sessions per day * 3 days = 6 schedule tasks
+        assertEquals(6, plan.scheduleTasks.size)
+        assertEquals(1, plan.scheduleTasks.first().dayNumber)
+        assertEquals(3, plan.scheduleTasks.last().dayNumber)
+    }
+
+    @Test
+    fun answerStudyQuestionOffline_retrievesMatchingLinesFromAttachments() {
+        val attachments = listOf(
+            "الفيزياء" to "ينص قانون أوم على أن شدة التيار تتناسب طردياً مع الجهد الكهربائي عند ثبوت درجة الحرارة."
+        )
+        val answer = answerStudyQuestionOffline(
+            question = "ما هو قانون أوم والجهد الكهربائي؟",
+            summary = "",
+            attachmentTexts = attachments
+        )
+        assertTrue(answer.contains("الفيزياء"))
+        assertTrue(answer.contains("قانون أوم"))
+    }
+
+    @Test
+    fun parseStudyPlanJson_parsesWrappedJsonAndNormalizesFields() {
+        val raw = """
+            ```json
+            {
+              "summaryMarkdown": "ملخص واضح ومنظم للمادة",
+              "keyPoints": ["نقطة أولى", "نقطة ثانية"],
+              "schedule": [
+                {
+                  "dayNumber": 1,
+                  "dayLabel": "اليوم 1",
+                  "timeSlot": "الصباح",
+                  "taskTitle": "قراءة الفصل الأول",
+                  "taskDetail": "حل التمارين الأساسية",
+                  "durationMinutes": 45
+                }
+              ]
+            }
+            ```
+        """.trimIndent()
+
+        val parsed = parseStudyPlanJson(raw, fallbackDailyMinutes = 60, fallbackTotalDays = 4)
+        assertFalse(parsed.isOfflineFallback)
+        assertEquals("ملخص واضح ومنظم للمادة", parsed.summaryMarkdown)
+        assertTrue(parsed.keyPointsText.contains("• نقطة أولى"))
+        assertEquals(1, parsed.scheduleTasks.size)
+        assertEquals(45, parsed.scheduleTasks[0].durationMinutes)
     }
 }
