@@ -155,6 +155,36 @@ class GeminiVideoTranslator {
         )
     }
 
+    private val textTranslationSchema = Schema.obj(
+        properties = mapOf(
+            "detectedLanguageCode" to Schema.string(description = "ISO 639-1 language code"),
+            "detectedLanguageNameArabic" to Schema.string(description = "Arabic name of detected source language"),
+            "translatedText" to Schema.string(description = "Natural context-aware translation in target language")
+        )
+    )
+
+    private val textModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = PRIMARY_MODEL_NAME,
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = textTranslationSchema
+                temperature = 0.25f
+            }
+        )
+    }
+
+    private val textFallbackModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = FALLBACK_MODEL_NAME,
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = textTranslationSchema
+                temperature = 0.25f
+            }
+        )
+    }
+
     suspend fun transcribeAndTranslateChunk(
         mediaBytes: ByteArray,
         mimeType: String,
@@ -368,6 +398,63 @@ class GeminiVideoTranslator {
         return runBatchTranslationPrompt(prompt, cues)
     }
 
+    suspend fun translateTextDirectly(
+        inputText: String,
+        sourceLanguage: LanguageOption,
+        targetLanguage: LanguageOption,
+        translationStyle: TranslationStyle = TranslationStyle.BALANCED
+    ): VoiceTranslationResult {
+        val sourceHint = if (sourceLanguage.code == SupportedLanguages.autoDetect.code) {
+            "Auto-detect the language of the input text."
+        } else {
+            "The source text is written in ${sourceLanguage.nativeName} (${sourceLanguage.code})."
+        }
+
+        val prompt = """
+            You are an expert literary and technical translator.
+            Translation Style: ${translationStyle.promptGuidance}
+            Task:
+            1. $sourceHint
+            2. Translate the text below naturally and faithfully into ${targetLanguage.nativeName} (ISO: ${targetLanguage.code}).
+            3. Set `detectedLanguageNameArabic` in Arabic (e.g. الإنجليزية, العربية, الفرنسية).
+            Text to translate:
+            $inputText
+        """.trimIndent()
+
+        try {
+            val response = generateWithFallback(
+                primaryModel = textModel,
+                fallbackModel = textFallbackModel
+            ) { model ->
+                model.generateContent(prompt)
+            }
+            val rawJson = response.text
+                ?: throw IllegalStateException("لم يُرجع نموذج الذكاء الاصطناعي نصاً مترجماً.")
+            val json = JSONObject(rawJson)
+            val detectedCode = json.optString("detectedLanguageCode", sourceLanguage.code).ifBlank { "en" }
+            val detectedAr = json.optString("detectedLanguageNameArabic", "")
+                .ifBlank { SupportedLanguages.findByCode(detectedCode).arabicName }
+            val translated = json.optString("translatedText", "").trim()
+            if (translated.isEmpty()) {
+                throw IllegalStateException("تعذر إنتاج ترجمة للنص المدخل.")
+            }
+            return VoiceTranslationResult(
+                detectedLanguageCode = detectedCode,
+                detectedLanguageNameArabic = detectedAr,
+                originalText = inputText.trim(),
+                translatedText = translated
+            )
+        } catch (e: TimeoutCancellationException) {
+            throw IllegalStateException("انتهت مهلة ترجمة النص. حاول مرة أخرى.")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw IllegalStateException(
+                formatUserFacingError(e, "تعذرت الترجمة السحابية للنص.")
+            )
+        }
+    }
+
     private suspend fun runBatchTranslationPrompt(
         prompt: String,
         cues: List<SubtitleCueEntity>
@@ -410,11 +497,23 @@ class GeminiVideoTranslator {
         }
     }
 
+    private class AppCheckVerificationException(val detail: String) :
+        IllegalStateException("App Check attestation failed: $detail")
+
     private suspend fun generateWithFallback(
         primaryModel: GenerativeModel,
         fallbackModel: GenerativeModel,
         call: suspend (GenerativeModel) -> GenerateContentResponse
     ): GenerateContentResponse {
+        val preflight = verifyOrRefreshAppCheckToken(forceRefresh = false, maxAttempts = 2)
+        if (preflight is AppCheckTokenOutcome.Failed) {
+            Log.w(TAG, "App Check preflight failed: ${preflight.detail}")
+            val secondTry = verifyOrRefreshAppCheckToken(forceRefresh = true, maxAttempts = 2)
+            if (secondTry is AppCheckTokenOutcome.Failed) {
+                throw AppCheckVerificationException(secondTry.detail)
+            }
+        }
+
         try {
             return withTimeout(AI_TIMEOUT_MS) { call(primaryModel) }
         } catch (e: CancellationException) {
@@ -423,10 +522,22 @@ class GeminiVideoTranslator {
             return withTimeout(AI_TIMEOUT_MS) { call(fallbackModel) }
         } catch (e: Exception) {
             if (isAppCheckError(e)) {
-                Log.w(TAG, "App Check token invalid/rejected, forcing token refresh and retrying", e)
-                refreshAppCheckToken()
-                delay(500L)
-                return withTimeout(AI_TIMEOUT_MS) { call(primaryModel) }
+                Log.w(TAG, "App Check token rejected by backend, forcing fresh token and retrying", e)
+                val refreshOutcome = verifyOrRefreshAppCheckToken(forceRefresh = true, maxAttempts = 2)
+                if (refreshOutcome is AppCheckTokenOutcome.Failed) {
+                    throw AppCheckVerificationException(refreshOutcome.detail)
+                }
+                delay(700L)
+                return try {
+                    withTimeout(AI_TIMEOUT_MS) { call(primaryModel) }
+                } catch (retryErr: Exception) {
+                    if (isAppCheckError(retryErr) || isTransientCapacityError(retryErr)) {
+                        delay(800L)
+                        withTimeout(AI_TIMEOUT_MS) { call(fallbackModel) }
+                    } else {
+                        throw retryErr
+                    }
+                }
             }
             if (!isTransientCapacityError(e)) throw e
             Log.w(TAG, "Primary model $PRIMARY_MODEL_NAME under high demand, falling back to $FALLBACK_MODEL_NAME", e)
@@ -437,8 +548,8 @@ class GeminiVideoTranslator {
                 throw fallbackErr
             } catch (fallbackErr: Exception) {
                 if (isAppCheckError(fallbackErr)) {
-                    refreshAppCheckToken()
-                    delay(500L)
+                    verifyOrRefreshAppCheckToken(forceRefresh = true, maxAttempts = 2)
+                    delay(700L)
                     return withTimeout(AI_TIMEOUT_MS) { call(fallbackModel) }
                 }
                 if (!isTransientCapacityError(fallbackErr)) throw fallbackErr
@@ -450,6 +561,7 @@ class GeminiVideoTranslator {
     }
 
     private fun isAppCheckError(e: Throwable): Boolean {
+        if (e is AppCheckVerificationException) return true
         val msg = (e.message ?: e.localizedMessage ?: "").lowercase()
         return msg.contains("app check") || msg.contains("appcheck") || msg.contains("attestation")
     }
@@ -471,12 +583,14 @@ class GeminiVideoTranslator {
         val msg = (e.message ?: e.localizedMessage ?: "").trim()
         val lower = msg.lowercase()
         return when {
+            e is AppCheckVerificationException ->
+                "تعذر التحقق الأمني من الجهاز (App Check: ${e.detail.take(70)}). تأكد من ضبط الوقت التلقائي وإغلاق VPN، أو استخدم الوضع المحلي الأوفلاين للنصوص والصوت والملفات."
             isAppCheckError(e) ->
-                "تعذر التحقق المؤقت من الأمان (App Check). تأكد من استقرار الشبكة أو أوقف VPN مؤقتاً ثم أعد المحاولة."
+                "رفض الخادم رمز الأمان (App Check: ${msg.take(70)}). تأكد من استقرار الشبكة وضبط الوقت التلقائي، أو استخدم الوضع المحلي المستقل الأوفلاين."
             isTransientCapacityError(e) ->
                 "خادم الذكاء الاصطناعي مزدحم مؤقتاً بسبب ضغط الطلبات. انتظر ثوانٍ ثم حاول مجدداً."
             e is IOException || lower.contains("unable to resolve host") || lower.contains("network") ->
-                "تعذر الاتصال بالإنترنت. تحقق من الشبكة وحاول مرة أخرى."
+                "تعذر الاتصال بالإنترنت. يمكنك استخدام الترجمة المحلية الأوفلاين للنصوص وملفات SRT/VTT والصوت."
             msg.isNotBlank() -> msg
             else -> defaultMessage
         }

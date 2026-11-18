@@ -42,9 +42,13 @@ credentials = "1.5.0"
 googleid = "1.1.1"
 media3 = "1.11.1"
 kotlinxSerializationJson = "1.8.0"
+mlkitTranslate = "17.0.3"
+mlkitLanguageId = "17.0.6"
 
 
 [libraries]
+mlkit-translate = { group = "com.google.mlkit", name = "translate", version.ref = "mlkitTranslate" }
+mlkit-language-id = { group = "com.google.mlkit", name = "language-id", version.ref = "mlkitLanguageId" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }

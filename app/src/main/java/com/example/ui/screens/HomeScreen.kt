@@ -1,6 +1,9 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,6 +18,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +34,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -37,15 +42,16 @@ import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.VideoFile
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ClosedCaption
 import androidx.compose.material.icons.outlined.CloudDone
+import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Translate
+import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -53,10 +59,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,14 +76,17 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.ai.AppCheckDiagnosticState
 import com.example.data.LanguageOption
 import com.example.data.SupportedLanguages
 import com.example.data.TranslationStyle
@@ -105,16 +116,23 @@ fun HomeScreen(
     outerPadding: PaddingValues,
     onOpenProject: (Long) -> Unit
 ) {
+    val context = LocalContext.current
     val projects by viewModel.projects.collectAsStateWithLifecycle()
     val sourceLanguage by viewModel.sourceLanguage.collectAsStateWithLifecycle()
     val targetLanguage by viewModel.targetLanguage.collectAsStateWithLifecycle()
     val translationStyle by viewModel.translationStyle.collectAsStateWithLifecycle()
     val processingState by viewModel.processingState.collectAsStateWithLifecycle()
+    val appCheckStatus by viewModel.appCheckStatus.collectAsStateWithLifecycle()
+    val isCheckingAppCheck by viewModel.isCheckingAppCheck.collectAsStateWithLifecycle()
+    val offlineEngineMode by viewModel.offlineEngineMode.collectAsStateWithLifecycle()
+    val downloadedOfflinePacks by viewModel.downloadedOfflinePacks.collectAsStateWithLifecycle()
+    val downloadingPackCode by viewModel.downloadingPackCode.collectAsStateWithLifecycle()
+    val packActionError by viewModel.packActionError.collectAsStateWithLifecycle()
     val view = LocalView.current
 
     val isActivelyProcessing = processingState is ProcessingUiState.ExtractingAudio ||
         processingState is ProcessingUiState.Translating
-    androidx.compose.runtime.DisposableEffect(view, isActivelyProcessing) {
+    DisposableEffect(view, isActivelyProcessing) {
         view.keepScreenOn = isActivelyProcessing
         onDispose {
             view.keepScreenOn = false
@@ -131,6 +149,37 @@ fun HomeScreen(
     ) { uri: Uri? ->
         if (uri != null) {
             viewModel.processSelectedVideo(uri, onCompleted = onOpenProject)
+        }
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        videoPickerLauncher.launch(
+            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+        )
+    }
+
+    val subtitleImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            viewModel.importAndTranslateSubtitleFile(uri, onCompleted = onOpenProject)
+        }
+    }
+
+    val launchVideoPicker = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            videoPickerLauncher.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+            )
         }
     }
 
@@ -170,7 +219,11 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
                 item {
-                    BayanTopHeader(onCloudBadgeClick = { showCloudInfoSheet = true })
+                    BayanTopHeader(
+                        offlineEngineMode = offlineEngineMode,
+                        appCheckStatus = appCheckStatus,
+                        onCloudBadgeClick = { showCloudInfoSheet = true }
+                    )
                 }
 
                 item {
@@ -182,9 +235,10 @@ fun HomeScreen(
                         onSelectSourceClick = { showSourcePicker = true },
                         onSelectTargetClick = { showTargetPicker = true },
                         onSwapLanguages = { viewModel.swapLanguages() },
-                        onPickVideoClick = {
-                            videoPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                        onPickVideoClick = launchVideoPicker,
+                        onImportSubtitlesClick = {
+                            subtitleImportLauncher.launch(
+                                arrayOf("text/*", "application/x-subrip", "application/octet-stream")
                             )
                         }
                     )
@@ -194,6 +248,7 @@ fun HomeScreen(
                     item {
                         ErrorBannerCard(
                             message = (processingState as ProcessingUiState.Error).message,
+                            onOpenCenter = { showCloudInfoSheet = true },
                             onDismiss = { viewModel.dismissProcessingError() }
                         )
                     }
@@ -265,12 +320,26 @@ fun HomeScreen(
     }
 
     if (showCloudInfoSheet) {
-        CloudAndApkSheet(onDismiss = { showCloudInfoSheet = false })
+        CloudAndApkSheet(
+            appCheckStatus = appCheckStatus,
+            isCheckingAppCheck = isCheckingAppCheck,
+            offlineEngineMode = offlineEngineMode,
+            downloadedOfflinePacks = downloadedOfflinePacks,
+            downloadingPackCode = downloadingPackCode,
+            packActionError = packActionError,
+            securityReport = viewModel.securityReport,
+            onToggleOfflineMode = { viewModel.setOfflineEngineMode(it) },
+            onRunAppCheckDiagnostics = { viewModel.runAppCheckDiagnostics() },
+            onDownloadPack = { viewModel.downloadOfflinePack(it) },
+            onDeletePack = { viewModel.deleteOfflinePack(it) },
+            onDismissPackError = { viewModel.dismissPackError() },
+            onDismiss = { showCloudInfoSheet = false }
+        )
     }
 
     if (showSourcePicker) {
         LanguagePickerSheet(
-            title = "اختر لغة الفيديو الأصلية",
+            title = "اختر لغة المحتوى الأصلية",
             languages = SupportedLanguages.allSourceLanguages,
             selectedCode = sourceLanguage.code,
             onSelect = { viewModel.setSourceLanguage(it) },
@@ -316,13 +385,17 @@ fun HomeScreen(
 }
 
 @Composable
-private fun BayanTopHeader(onCloudBadgeClick: () -> Unit) {
+private fun BayanTopHeader(
+    offlineEngineMode: Boolean,
+    appCheckStatus: AppCheckDiagnosticState,
+    onCloudBadgeClick: () -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = stringResource(R.string.app_name),
                 style = MaterialTheme.typography.displayLarge,
@@ -346,15 +419,20 @@ private fun BayanTopHeader(onCloudBadgeClick: () -> Unit) {
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val (badgeIcon, badgeColor) = when {
+                    offlineEngineMode -> Icons.Outlined.CloudOff to EmeraldSuccess
+                    appCheckStatus is AppCheckDiagnosticState.AttentionNeeded -> Icons.Outlined.VerifiedUser to IceSapphireGlow
+                    else -> Icons.Outlined.CloudDone to EmeraldSuccess
+                }
                 Icon(
-                    imageVector = Icons.Outlined.CloudDone,
+                    imageVector = badgeIcon,
                     contentDescription = stringResource(R.string.cloud_status_title),
-                    tint = EmeraldSuccess,
+                    tint = badgeColor,
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = stringResource(R.string.cloud_status_badge),
+                    text = if (offlineEngineMode) "محلي مستقل • v3.0" else stringResource(R.string.cloud_status_badge),
                     style = MaterialTheme.typography.labelMedium,
                     color = SilverPure
                 )
@@ -372,7 +450,8 @@ private fun HeroTranslationStudioCard(
     onSelectSourceClick: () -> Unit,
     onSelectTargetClick: () -> Unit,
     onSwapLanguages: () -> Unit,
-    onPickVideoClick: () -> Unit
+    onPickVideoClick: () -> Unit,
+    onImportSubtitlesClick: () -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(24.dp),
@@ -393,7 +472,7 @@ private fun HeroTranslationStudioCard(
                     )
                 )
                 .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -465,6 +544,29 @@ private fun HeroTranslationStudioCard(
                     text = stringResource(R.string.pick_video_cta),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
+                )
+            }
+
+            OutlinedButton(
+                onClick = onImportSubtitlesClick,
+                border = BorderStroke(1.dp, MidnightBorder),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("import_subtitles_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Description,
+                    contentDescription = null,
+                    tint = IceSapphireGlow,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = stringResource(R.string.import_subtitles_cta),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = SilverPure
                 )
             }
 
@@ -776,6 +878,7 @@ private fun ProjectHistoryCard(
 @Composable
 private fun ErrorBannerCard(
     message: String,
+    onOpenCenter: () -> Unit,
     onDismiss: () -> Unit
 ) {
     Surface(
@@ -784,25 +887,39 @@ private fun ErrorBannerCard(
         border = BorderStroke(1.dp, CoralError.copy(alpha = 0.5f)),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Icon(
-                imageVector = Icons.Outlined.ErrorOutline,
-                contentDescription = null,
-                tint = CoralError,
-                modifier = Modifier.size(22.dp)
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = SilverPure,
-                modifier = Modifier.weight(1f)
-            )
-            TextButton(onClick = onDismiss) {
-                Text("حسناً", color = SilverPure, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Outlined.ErrorOutline,
+                    contentDescription = null,
+                    tint = CoralError,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SilverPure,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = onDismiss) {
+                    Text("حسناً", color = SilverPure, fontWeight = FontWeight.Bold)
+                }
+            }
+            OutlinedButton(
+                onClick = onOpenCenter,
+                border = BorderStroke(1.dp, CoralError.copy(alpha = 0.45f)),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "فحص App Check أو تفعيل الوضع المحلي الأوفلاين",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = SilverPure
+                )
             }
         }
     }

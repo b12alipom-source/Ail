@@ -193,7 +193,8 @@ fun StudioScreen(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                         )
                     },
-                    onDismissReTranslateError = { viewModel.dismissReTranslateError() }
+                    onDismissReTranslateError = { viewModel.dismissReTranslateError() },
+                    onDismissReTranslateNotice = { viewModel.dismissReTranslateNotice() }
                 )
 
                 if (showExportSheet) {
@@ -246,7 +247,8 @@ private fun StudioReadyContent(
     onPlaybackPosition: (Long) -> Unit,
     onEditCue: (SubtitleCueEntity) -> Unit,
     onRelinkVideo: () -> Unit,
-    onDismissReTranslateError: () -> Unit
+    onDismissReTranslateError: () -> Unit,
+    onDismissReTranslateNotice: () -> Unit
 ) {
     val context = LocalContext.current
     val view = LocalView.current
@@ -370,6 +372,28 @@ private fun StudioReadyContent(
                     )
                     TextButton(onClick = onDismissReTranslateError) {
                         Text("إغلاق", color = SilverPure)
+                    }
+                }
+            }
+        }
+
+        state.reTranslateNotice?.let { noteMsg ->
+            Surface(
+                color = IceSapphire.copy(alpha = 0.14f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = noteMsg,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = IceSapphireGlow,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onDismissReTranslateNotice) {
+                        Text("حسناً", color = SilverPure)
                     }
                 }
             }

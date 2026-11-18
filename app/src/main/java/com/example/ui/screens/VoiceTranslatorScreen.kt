@@ -36,16 +36,21 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -80,6 +85,7 @@ import com.example.ui.BayanViewModel
 import com.example.ui.VoiceUiState
 import com.example.ui.components.LanguagePickerSheet
 import com.example.ui.theme.CoralError
+import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.IceSapphire
 import com.example.ui.theme.IceSapphireGlow
 import com.example.ui.theme.MidnightBorder
@@ -92,6 +98,11 @@ import com.example.ui.theme.SilverMetallic
 import com.example.ui.theme.SilverMuted
 import com.example.ui.theme.SilverPure
 
+private enum class InterpreterTab {
+    VOICE,
+    TEXT
+}
+
 @Composable
 fun VoiceTranslatorScreen(
     viewModel: BayanViewModel,
@@ -102,7 +113,9 @@ fun VoiceTranslatorScreen(
     val sourceLanguage by viewModel.sourceLanguage.collectAsStateWithLifecycle()
     val targetLanguage by viewModel.targetLanguage.collectAsStateWithLifecycle()
     val translationStyle by viewModel.translationStyle.collectAsStateWithLifecycle()
+    val offlineEngineMode by viewModel.offlineEngineMode.collectAsStateWithLifecycle()
     val voiceUiState by viewModel.voiceUiState.collectAsStateWithLifecycle()
+    val voiceNotice by viewModel.voiceNotice.collectAsStateWithLifecycle()
     val voiceHistory by viewModel.voiceHistory.collectAsStateWithLifecycle()
 
     val isVoiceBusy = voiceUiState is VoiceUiState.Recording || voiceUiState is VoiceUiState.Translating
@@ -113,6 +126,8 @@ fun VoiceTranslatorScreen(
         }
     }
 
+    var activeTab by remember { mutableStateOf(InterpreterTab.VOICE) }
+    var textInputDraft by remember { mutableStateOf("") }
     var showSourcePicker by remember { mutableStateOf(false) }
     var showTargetPicker by remember { mutableStateOf(false) }
     var hasMicPermission by remember {
@@ -161,49 +176,133 @@ fun VoiceTranslatorScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stringResource(R.string.voice_title),
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = SilverPure
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = stringResource(R.string.voice_subtitle),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = SilverMuted
-                        )
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(99.dp),
-                        color = MidnightSurfaceHigh,
-                        border = BorderStroke(1.dp, MidnightBorder),
-                        modifier = Modifier.clickable {
-                            val styles = TranslationStyle.entries
-                            val nextIndex = (styles.indexOf(translationStyle) + 1) % styles.size
-                            viewModel.setTranslationStyle(styles[nextIndex])
-                        }
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.AutoAwesome,
-                                contentDescription = "نمط الترجمة",
-                                tint = IceSapphireGlow,
-                                modifier = Modifier.size(16.dp)
-                            )
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = translationStyle.arabicLabel,
-                                style = MaterialTheme.typography.labelMedium,
+                                text = stringResource(R.string.voice_title),
+                                style = MaterialTheme.typography.headlineMedium,
                                 color = SilverPure
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = stringResource(R.string.voice_subtitle),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SilverMuted
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(99.dp),
+                            color = if (offlineEngineMode) EmeraldSuccess.copy(alpha = 0.2f) else MidnightSurfaceHigh,
+                            border = BorderStroke(
+                                1.dp,
+                                if (offlineEngineMode) EmeraldSuccess else MidnightBorder
+                            ),
+                            modifier = Modifier
+                                .testTag("toggle_offline_engine")
+                                .clickable { viewModel.setOfflineEngineMode(!offlineEngineMode) }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.CloudOff,
+                                    contentDescription = "تبديل الوضع المحلي",
+                                    tint = if (offlineEngineMode) EmeraldSuccess else SilverMuted,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = if (offlineEngineMode) "محلي أوفلاين 100%" else "تلقائي (سحابي + محلي)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = SilverPure
+                                )
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(99.dp),
+                            color = MidnightSurfaceHigh,
+                            border = BorderStroke(1.dp, MidnightBorder),
+                            modifier = Modifier.clickable {
+                                val styles = TranslationStyle.entries
+                                val nextIndex = (styles.indexOf(translationStyle) + 1) % styles.size
+                                viewModel.setTranslationStyle(styles[nextIndex])
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.AutoAwesome,
+                                    contentDescription = "نمط الترجمة",
+                                    tint = IceSapphireGlow,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = translationStyle.arabicLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = SilverPure
+                                )
+                            }
+                        }
+                    }
+
+                    // Mode Switcher: Voice vs Instant Text
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val isVoice = activeTab == InterpreterTab.VOICE
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isVoice) SilverPure else MidnightSurface,
+                            border = BorderStroke(1.dp, if (isVoice) SilverPure else MidnightBorderSubtle),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("mode_voice_tab")
+                                .clickable { activeTab = InterpreterTab.VOICE }
+                        ) {
+                            Text(
+                                text = "ترجمة صوتية (مايك)",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = if (isVoice) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isVoice) MidnightVoid else SilverMetallic,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(vertical = 11.dp)
+                            )
+                        }
+
+                        val isText = activeTab == InterpreterTab.TEXT
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isText) SilverPure else MidnightSurface,
+                            border = BorderStroke(1.dp, if (isText) SilverPure else MidnightBorderSubtle),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("mode_text_tab")
+                                .clickable { activeTab = InterpreterTab.TEXT }
+                        ) {
+                            Text(
+                                text = "ترجمة نصوص (أوفلاين)",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = if (isText) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isText) MidnightVoid else SilverMetallic,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(vertical = 11.dp)
                             )
                         }
                     }
@@ -270,58 +369,105 @@ fun VoiceTranslatorScreen(
                             )
                         }
 
-                        if (!hasMicPermission && permissionDeniedOnce) {
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = MidnightNavy,
-                                border = BorderStroke(1.dp, MidnightBorderSubtle),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                        if (activeTab == InterpreterTab.VOICE) {
+                            if (!hasMicPermission && permissionDeniedOnce) {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MidnightNavy,
+                                    border = BorderStroke(1.dp, MidnightBorderSubtle),
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text(
-                                        text = stringResource(R.string.voice_permission_needed),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = SilverMetallic,
-                                        textAlign = TextAlign.Center
-                                    )
-                                    Button(
-                                        onClick = {
-                                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                        },
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = SilverPure,
-                                            contentColor = MidnightVoid
-                                        )
+                                    Column(
+                                        modifier = Modifier.padding(16.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
                                         Text(
-                                            text = stringResource(R.string.voice_grant_permission),
-                                            fontWeight = FontWeight.Bold
+                                            text = stringResource(R.string.voice_permission_needed),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = SilverMetallic,
+                                            textAlign = TextAlign.Center
                                         )
-                                    }
-                                }
-                            }
-                        } else {
-                            VoiceStudioControl(
-                                state = voiceUiState,
-                                onToggleRecord = {
-                                    when (voiceUiState) {
-                                        is VoiceUiState.Recording -> viewModel.stopAndTranslateVoice()
-                                        is VoiceUiState.Translating -> Unit
-                                        else -> {
-                                            if (hasMicPermission) {
-                                                viewModel.startVoiceRecording()
-                                            } else {
+                                        Button(
+                                            onClick = {
                                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                            }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = SilverPure,
+                                                contentColor = MidnightVoid
+                                            )
+                                        ) {
+                                            Text(
+                                                text = stringResource(R.string.voice_grant_permission),
+                                                fontWeight = FontWeight.Bold
+                                            )
                                         }
                                     }
+                                }
+                            } else {
+                                VoiceStudioControl(
+                                    state = voiceUiState,
+                                    offlineEngineMode = offlineEngineMode,
+                                    onToggleRecord = {
+                                        when (voiceUiState) {
+                                            is VoiceUiState.Recording -> viewModel.stopAndTranslateVoice()
+                                            is VoiceUiState.Translating -> Unit
+                                            else -> {
+                                                if (hasMicPermission) {
+                                                    viewModel.startVoiceRecording()
+                                                } else {
+                                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                                }
+                                            }
+                                        }
+                                    },
+                                    onCancel = { viewModel.cancelVoiceRecording() }
+                                )
+                            }
+                        } else {
+                            // Instant Text Translator (Works 100% offline with ML Kit or online with Cloud AI)
+                            InstantTextTranslatorCard(
+                                text = textInputDraft,
+                                isBusy = voiceUiState is VoiceUiState.Translating,
+                                onTextChange = { textInputDraft = it },
+                                onPaste = {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clip = cm.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
+                                    if (!clip.isNullOrBlank()) {
+                                        textInputDraft = clip
+                                    }
                                 },
-                                onCancel = { viewModel.cancelVoiceRecording() }
+                                onClear = { textInputDraft = "" },
+                                onTranslate = {
+                                    viewModel.translateInstantText(textInputDraft)
+                                }
                             )
+                        }
+                    }
+                }
+            }
+
+            voiceNotice?.let { note ->
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = IceSapphire.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, IceSapphire.copy(alpha = 0.45f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = note,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = IceSapphireGlow,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { viewModel.dismissVoiceNotice() }) {
+                                Text("حسناً", color = SilverPure)
+                            }
                         }
                     }
                 }
@@ -335,25 +481,47 @@ fun VoiceTranslatorScreen(
                         border = BorderStroke(1.dp, CoralError.copy(alpha = 0.5f)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(
+                        Column(
                             modifier = Modifier.padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.ErrorOutline,
-                                contentDescription = null,
-                                tint = CoralError,
-                                modifier = Modifier.size(22.dp)
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(
-                                text = (voiceUiState as VoiceUiState.Error).message,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = SilverPure,
-                                modifier = Modifier.weight(1f)
-                            )
-                            TextButton(onClick = { viewModel.dismissVoiceError() }) {
-                                Text("حسناً", color = SilverPure, fontWeight = FontWeight.Bold)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Outlined.ErrorOutline,
+                                    contentDescription = null,
+                                    tint = CoralError,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = (voiceUiState as VoiceUiState.Error).message,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = SilverPure,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(onClick = { viewModel.dismissVoiceError() }) {
+                                    Text("حسناً", color = SilverPure, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            if (activeTab == InterpreterTab.VOICE && !offlineEngineMode) {
+                                OutlinedButton(
+                                    onClick = {
+                                        viewModel.dismissVoiceError()
+                                        viewModel.setOfflineEngineMode(true)
+                                        if (hasMicPermission) {
+                                            viewModel.startOfflineSpeechDictation()
+                                        }
+                                    },
+                                    border = BorderStroke(1.dp, EmeraldSuccess.copy(alpha = 0.6f)),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "تشغيل الوضع المحلي المستقل (بدون خادم)",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = SilverPure
+                                    )
+                                }
                             }
                         }
                     }
@@ -412,7 +580,7 @@ fun VoiceTranslatorScreen(
 
     if (showSourcePicker) {
         LanguagePickerSheet(
-            title = "اختر لغة المتحدث",
+            title = "اختر لغة المتحدث أو النص",
             languages = SupportedLanguages.allSourceLanguages,
             selectedCode = sourceLanguage.code,
             onSelect = { viewModel.setSourceLanguage(it) },
@@ -432,8 +600,101 @@ fun VoiceTranslatorScreen(
 }
 
 @Composable
+private fun InstantTextTranslatorCard(
+    text: String,
+    isBusy: Boolean,
+    onTextChange: (String) -> Unit,
+    onPaste: () -> Unit,
+    onClear: () -> Unit,
+    onTranslate: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = onTextChange,
+            placeholder = {
+                Text(
+                    text = "اكتب أو الصق أي نص أو عبارة للترجمة الفورية…",
+                    color = SilverMuted
+                )
+            },
+            minLines = 3,
+            maxLines = 6,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = SilverPure,
+                unfocusedTextColor = SilverMetallic,
+                focusedBorderColor = IceSapphire,
+                unfocusedBorderColor = MidnightBorderSubtle,
+                focusedContainerColor = MidnightNavy.copy(alpha = 0.7f),
+                unfocusedContainerColor = MidnightNavy.copy(alpha = 0.7f)
+            ),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("instant_text_input")
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedButton(
+                onClick = onPaste,
+                border = BorderStroke(1.dp, MidnightBorderSubtle),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("لصق", color = SilverMetallic)
+            }
+            if (text.isNotEmpty()) {
+                OutlinedButton(
+                    onClick = onClear,
+                    border = BorderStroke(1.dp, MidnightBorderSubtle),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("مسح", color = SilverMuted)
+                }
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            Button(
+                onClick = onTranslate,
+                enabled = !isBusy && text.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = SilverPure,
+                    contentColor = MidnightVoid
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.testTag("translate_text_button")
+            ) {
+                if (isBusy) {
+                    CircularProgressIndicator(
+                        color = MidnightVoid,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("جاري الترجمة…", fontWeight = FontWeight.Bold)
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.Translate,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("ترجمة فورية", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun VoiceStudioControl(
     state: VoiceUiState,
+    offlineEngineMode: Boolean,
     onToggleRecord: () -> Unit,
     onCancel: () -> Unit
 ) {
@@ -446,7 +707,6 @@ private fun VoiceStudioControl(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Live amplitude waveform bars
         Row(
             modifier = Modifier.height(36.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -539,7 +799,11 @@ private fun VoiceStudioControl(
             }
             else -> {
                 Text(
-                    text = stringResource(R.string.voice_tap_to_record),
+                    text = if (offlineEngineMode) {
+                        "اضغط للتحدث بالوضع المحلي الأوفلاين"
+                    } else {
+                        stringResource(R.string.voice_tap_to_record)
+                    },
                     style = MaterialTheme.typography.labelLarge,
                     color = SilverMetallic
                 )

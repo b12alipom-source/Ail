@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.bayan.vxqmrt"
     minSdk = 24
     targetSdk = 36
-    versionCode = 6
-    versionName = "2.2"
+    versionCode = 7
+    versionName = "3.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -125,6 +125,8 @@ dependencies {
   implementation(libs.firebase.appcheck.debug)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
+  implementation(libs.mlkit.translate)
+  implementation(libs.mlkit.language.id)
   // implementation(libs.logging.interceptor)
   // implementation(libs.moshi.kotlin)
   // implementation(libs.okhttp)

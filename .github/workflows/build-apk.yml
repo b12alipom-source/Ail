@@ -28,19 +28,38 @@ jobs:
           gradle-version: '9.3.1'
 
       - name: Prepare signing keystores for CI build
+        env:
+          BAYAN_KEYSTORE_BASE64: ${{ secrets.BAYAN_KEYSTORE_BASE64 }}
+          BAYAN_STORE_PASSWORD: ${{ secrets.BAYAN_STORE_PASSWORD }}
+          BAYAN_KEY_ALIAS: ${{ secrets.BAYAN_KEY_ALIAS }}
+          BAYAN_KEY_PASSWORD: ${{ secrets.BAYAN_KEY_PASSWORD }}
         run: |
           if [ -f debug.keystore.base64 ]; then
             base64 -d debug.keystore.base64 > debug.keystore
           fi
-          keytool -genkeypair -v \
-            -keystore "$RUNNER_TEMP/release.jks" \
-            -alias upload \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -storepass bayanrelease \
-            -keypass bayanrelease \
-            -dname "CN=Bayan,O=BayanApp,C=IQ"
+          if [ -n "$BAYAN_KEYSTORE_BASE64" ]; then
+            echo "$BAYAN_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "STORE_PASS_VAL=${BAYAN_STORE_PASSWORD:-bayanrelease}" >> "$GITHUB_ENV"
+            echo "KEY_PASS_VAL=${BAYAN_KEY_PASSWORD:-bayanrelease}" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS_VAL=${BAYAN_KEY_ALIAS:-upload}" >> "$GITHUB_ENV"
+            echo "KEYSTORE_MODE=ثابت ومستمر (من GitHub Secrets)" >> "$GITHUB_ENV"
+          else
+            keytool -genkeypair -v \
+              -keystore "$RUNNER_TEMP/release.jks" \
+              -alias upload \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass bayanrelease \
+              -keypass bayanrelease \
+              -dname "CN=Bayan,O=BayanApp,C=IQ"
+            echo "STORE_PASS_VAL=bayanrelease" >> "$GITHUB_ENV"
+            echo "KEY_PASS_VAL=bayanrelease" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS_VAL=upload" >> "$GITHUB_ENV"
+            echo "KEYSTORE_MODE=تلقائي مؤقت" >> "$GITHUB_ENV"
+          fi
+          CERT_SHA256=$(keytool -list -v -keystore "$RUNNER_TEMP/release.jks" -alias "$KEY_ALIAS_VAL" -storepass "$STORE_PASS_VAL" 2>/dev/null | grep -i "SHA256:" | sed 's/.*SHA256:[[:space:]]*//I')
+          echo "CERT_SHA256=${CERT_SHA256}" >> "$GITHUB_ENV"
 
       - name: Ensure Firebase configuration exists for CI build
         run: |
@@ -89,26 +108,42 @@ jobs:
           EOF
           fi
 
-      - name: Build signed Release APK
+      - name: Build signed Release APK and AAB
         env:
           KEYSTORE_PATH: ${{ runner.temp }}/release.jks
-          STORE_PASSWORD: bayanrelease
-          KEY_PASSWORD: bayanrelease
-        run: gradle assembleRelease --no-daemon
+          STORE_PASSWORD: ${{ env.STORE_PASS_VAL }}
+          KEY_PASSWORD: ${{ env.KEY_PASS_VAL }}
+        run: gradle assembleRelease bundleRelease --no-daemon
 
-      - name: Rename APK for direct mobile download
-        run: cp app/build/outputs/apk/release/app-release.apk Bayan-v2.2.apk
+      - name: Package APK & AAB with SHA-256 verification
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk Bayan-v3.0.apk
+          cp app/build/outputs/bundle/release/app-release.aab Bayan-v3.0.aab
+          APK_SHA256=$(sha256sum Bayan-v3.0.apk | awk '{print $1}')
+          echo "APK_SHA256=${APK_SHA256}" >> "$GITHUB_ENV"
 
-      - name: Publish APK to GitHub Releases
+      - name: Publish APK and AAB to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.2
-          name: Bayan V2.2 (Android APK)
-          body: "تطبيق بيان v2.2 - ضبط دقة التوقيت الزمني للترجمة + تجديد تلقائي لرمز App Check + تشغيل مستمر لا ينطفئ."
-          files: Bayan-v2.2.apk
+          tag_name: v3.0
+          name: Bayan V3.0 (Standalone Android APK + AAB)
+          body: |
+            تطبيق بيان v3.0 — المحرك المستقل المتكامل:
+            - دعم الترجمة المحلية الأوفلاين 100% (ML Kit Translate + Language ID) للنصوص والصوت وملفات SRT/VTT.
+            - فحص وإصلاح ذكي متقدم لرمز App Check مع توضيح التشخيص الفوري.
+            - خدمة خلفية مستمرة (Foreground Service + WakeLock) لعدم توقف الترجمة عند قفل الشاشة.
+            - تقوية الأمان (HTTPS حصراً + تعطيل النسخ غير المشفر + فحص بصمة الشهادة).
+            - نوع التوقيع: ${{ env.KEYSTORE_MODE }}
+            - بصمة شهادة التطبيق (SHA-256): `${{ env.CERT_SHA256 }}`
+            - بصمة ملف APK (SHA-256): `${{ env.APK_SHA256 }}`
+          files: |
+            Bayan-v3.0.apk
+            Bayan-v3.0.aab
 
-      - name: Upload APK artifact
+      - name: Upload APK and AAB artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Bayan-v2.2-APK
-          path: Bayan-v2.2.apk
+          name: Bayan-v3.0-Artifacts
+          path: |
+            Bayan-v3.0.apk
+            Bayan-v3.0.aab

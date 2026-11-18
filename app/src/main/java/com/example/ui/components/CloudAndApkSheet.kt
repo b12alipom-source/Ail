@@ -1,8 +1,15 @@
 package com.example.ui.components
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -11,33 +18,56 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudDone
-import androidx.compose.material.icons.outlined.InstallMobile
+import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.DownloadForOffline
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.example.BuildConfig
 import com.example.R
+import com.example.ai.AppCheckDiagnosticState
+import com.example.data.SupportedLanguages
+import com.example.security.SecurityAuditReport
+import com.example.ui.theme.CoralError
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.IceSapphire
 import com.example.ui.theme.IceSapphireGlow
+import com.example.ui.theme.MidnightBorder
 import com.example.ui.theme.MidnightBorderSubtle
+import com.example.ui.theme.MidnightNavy
 import com.example.ui.theme.MidnightSurface
 import com.example.ui.theme.MidnightSurfaceHigh
 import com.example.ui.theme.MidnightVoid
@@ -45,12 +75,25 @@ import com.example.ui.theme.SilverMetallic
 import com.example.ui.theme.SilverMuted
 import com.example.ui.theme.SilverPure
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun CloudAndApkSheet(
+    appCheckStatus: AppCheckDiagnosticState,
+    isCheckingAppCheck: Boolean,
+    offlineEngineMode: Boolean,
+    downloadedOfflinePacks: Set<String>,
+    downloadingPackCode: String?,
+    packActionError: String?,
+    securityReport: SecurityAuditReport,
+    onToggleOfflineMode: (Boolean) -> Unit,
+    onRunAppCheckDiagnostics: () -> Unit,
+    onDownloadPack: (String) -> Unit,
+    onDeletePack: (String) -> Unit,
+    onDismissPackError: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val context = LocalContext.current
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -61,10 +104,11 @@ fun CloudAndApkSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .navigationBarsPadding()
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Text(
                 text = stringResource(R.string.cloud_status_title),
@@ -72,26 +116,337 @@ fun CloudAndApkSheet(
                 color = SilverPure
             )
 
-            InfoCard(
-                icon = Icons.Outlined.CloudDone,
-                iconTint = EmeraldSuccess,
-                title = "خادم سحابي مستقل دائم (24/7)",
-                description = "التطبيق مرتبط مباشرة بخوادم غوغل عبر Firebase AI Logic (Gemini 3.8 Flash مع بديل تلقائي سريع) ويعمل بشكل مستقل تماماً على هاتفك دون الحاجة لفتح منصة AI Studio."
-            )
+            // 1. Standalone Offline Engine Toggle
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MidnightSurfaceHigh,
+                border = BorderStroke(
+                    1.dp,
+                    if (offlineEngineMode) EmeraldSuccess.copy(alpha = 0.6f) else MidnightBorderSubtle
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (offlineEngineMode) Icons.Outlined.CloudOff else Icons.Outlined.CloudDone,
+                        contentDescription = null,
+                        tint = if (offlineEngineMode) EmeraldSuccess else IceSapphireGlow,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "الوضع المحلي المستقل (أوفلاين 100%)",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = SilverPure
+                        )
+                        Text(
+                            text = "يعمل مباشرة على جهازك لترجمة النصوص والصوت وملفات SRT بدون أي اتصال أو App Check.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SilverMetallic
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Switch(
+                        checked = offlineEngineMode,
+                        onCheckedChange = onToggleOfflineMode,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = MidnightVoid,
+                            checkedTrackColor = EmeraldSuccess
+                        ),
+                        modifier = Modifier.testTag("offline_mode_switch")
+                    )
+                }
+            }
 
-            InfoCard(
-                icon = Icons.Outlined.InstallMobile,
-                iconTint = IceSapphireGlow,
-                title = "ثبات مستمر أثناء العمل (${BuildConfig.VERSION_NAME}v)",
-                description = "يبقى التطبيق نشطاً أثناء الترجمة والمشاهدة مع منع إطفاء الشاشة تلقائياً أو إعادة التشغيل عند تدوير الجهاز، وتُحفظ جميع الترجمات محلياً في جهازك."
-            )
+            // 2. Live App Check & Cloud Engine Diagnostics
+            val (statusIcon, statusTint, statusTitle, statusDesc) = when (appCheckStatus) {
+                is AppCheckDiagnosticState.Verified -> QuadInfo(
+                    Icons.Outlined.VerifiedUser,
+                    EmeraldSuccess,
+                    "التحقق السحابي جاهز (${appCheckStatus.providerName})",
+                    "رمز الأمان نشط ومتصل بخوادم Firebase AI Logic. الفيديوهات الطويلة والترجمة الأدبية تعمل بأقصى دقة."
+                )
 
-            InfoCard(
-                icon = Icons.Outlined.VerifiedUser,
-                iconTint = IceSapphire,
-                title = "حماية الإصدار وإدارة التحقق التلقائي",
-                description = "نسخة الإصدار (Release) مزودة بتجديد تلقائي لرمز App Check ومعالجة ذكية لمقاطع الفيديو الطويلة بدقة مزامنة عالية."
-            )
+                is AppCheckDiagnosticState.Initializing -> QuadInfo(
+                    Icons.Outlined.CloudDone,
+                    IceSapphireGlow,
+                    "جاري تجهيز التحقق السحابي (App Check)",
+                    "يمكنك تشغيل فحص التحقق الآن أو استخدام الوضع المحلي أوفلاين في أي لحظة."
+                )
+
+                is AppCheckDiagnosticState.AttentionNeeded -> QuadInfo(
+                    Icons.Outlined.WarningAmber,
+                    CoralError,
+                    "تعذر التحقق السحابي (${appCheckStatus.providerName})",
+                    "السبب التقني: ${appCheckStatus.reason}\nتأكد من ضبط التاريخ والوقت تلقائياً وإيقاف VPN، أو اعتمد على الوضع المحلي أوفلاين."
+                )
+            }
+
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MidnightSurfaceHigh,
+                border = BorderStroke(1.dp, MidnightBorderSubtle),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Icon(
+                            imageVector = statusIcon,
+                            contentDescription = null,
+                            tint = statusTint,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = statusTitle,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = SilverPure
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = statusDesc,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SilverMetallic
+                            )
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = onRunAppCheckDiagnostics,
+                        enabled = !isCheckingAppCheck,
+                        border = BorderStroke(1.dp, MidnightBorder),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("appcheck_retest_button")
+                    ) {
+                        if (isCheckingAppCheck) {
+                            CircularProgressIndicator(
+                                color = IceSapphireGlow,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("جاري فحص وتجديد التحقق…", color = SilverPure)
+                        } else {
+                            Icon(
+                                imageVector = Icons.Outlined.Refresh,
+                                contentDescription = null,
+                                tint = IceSapphireGlow,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("فحص وتجديد تحقق App Check الآن", color = SilverPure)
+                        }
+                    }
+                }
+            }
+
+            // 3. Offline Language Packs Manager
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MidnightSurfaceHigh,
+                border = BorderStroke(1.dp, MidnightBorderSubtle),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Outlined.DownloadForOffline,
+                            contentDescription = null,
+                            tint = IceSapphireGlow,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "حزم اللغات المحلية (للعمل بدون إنترنت)",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = SilverPure
+                        )
+                    }
+                    Text(
+                        text = "نزّل اللغات التي تستخدمها مرة واحدة لتعمل الترجمة النصية وملفات SRT والإملاء دون أي اتصال مستقبلاً.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SilverMetallic
+                    )
+
+                    packActionError?.let { err ->
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = CoralError.copy(alpha = 0.14f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onDismissPackError() }
+                        ) {
+                            Text(
+                                text = err,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SilverPure,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SupportedLanguages.allTargetLanguages.take(8).forEach { lang ->
+                            val isDownloaded = downloadedOfflinePacks.contains(lang.code)
+                            val isDownloading = downloadingPackCode == lang.code
+                            Surface(
+                                shape = RoundedCornerShape(99.dp),
+                                color = if (isDownloaded) EmeraldSuccess.copy(alpha = 0.18f) else MidnightNavy,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isDownloaded) EmeraldSuccess else MidnightBorderSubtle
+                                ),
+                                modifier = Modifier.clickable(enabled = downloadingPackCode == null) {
+                                    if (isDownloaded) {
+                                        onDeletePack(lang.code)
+                                    } else {
+                                        onDownloadPack(lang.code)
+                                    }
+                                }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    when {
+                                        isDownloading -> CircularProgressIndicator(
+                                            color = IceSapphireGlow,
+                                            strokeWidth = 2.dp,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        isDownloaded -> Icon(
+                                            imageVector = Icons.Outlined.DeleteOutline,
+                                            contentDescription = "حذف الحزمة",
+                                            tint = EmeraldSuccess,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        else -> Icon(
+                                            imageVector = Icons.Outlined.DownloadForOffline,
+                                            contentDescription = "تنزيل الحزمة",
+                                            tint = SilverMuted,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = if (isDownloaded) "${lang.arabicName} ✓" else lang.arabicName,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (isDownloaded) SilverPure else SilverMetallic
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. Security & Installation Trust Verification Card
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MidnightSurfaceHigh,
+                border = BorderStroke(1.dp, MidnightBorderSubtle),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Outlined.Security,
+                            contentDescription = null,
+                            tint = EmeraldSuccess,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "درع الأمان وسلامة التثبيت (${securityReport.versionName}v)",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = SilverPure
+                        )
+                    }
+
+                    SecurityBadgeRow(
+                        label = "اتصال مشفر حصراً (HTTPS Only)",
+                        ok = securityReport.httpsOnlyEnforced
+                    )
+                    SecurityBadgeRow(
+                        label = "بدون أذونات تخزين أو وصول خاص",
+                        ok = securityReport.zeroBroadStoragePermissions
+                    )
+                    SecurityBadgeRow(
+                        label = "تعطيل النسخ الاحتياطي غير المشفر",
+                        ok = securityReport.backupDisabled
+                    )
+
+                    Text(
+                        text = "ملاحظة التثبيت: عند تثبيت أي APK من خارج متجر Play يعرض أندرويد تنبيه Play Protect تلقائياً بسبب التثبيت الجانبي. طابق بصمة SHA-256 أدناه مع صفحة الإصدارات وتثبيت التوقيع الموحد في GitHub يضمن سلامة تطبيقك وعدم اعتباره خطراً:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SilverMetallic
+                    )
+
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MidnightNavy,
+                        border = BorderStroke(1.dp, MidnightBorderSubtle),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Shield,
+                                contentDescription = null,
+                                tint = IceSapphireGlow,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "SHA-256: ${securityReport.signingSha256}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SilverMetallic,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("Bayan SHA-256", securityReport.signingSha256))
+                                    Toast.makeText(context, "تم نسخ بصمة الشهادة", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.ContentCopy,
+                                    contentDescription = "نسخ SHA-256",
+                                    tint = SilverPure,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(4.dp))
 
@@ -106,49 +461,35 @@ fun CloudAndApkSheet(
                     .fillMaxWidth()
                     .height(50.dp)
             ) {
-                Text("فهمت", fontWeight = FontWeight.Bold)
+                Text("إغلاق", fontWeight = FontWeight.Bold)
             }
         }
     }
 }
 
+private data class QuadInfo(
+    val icon: ImageVector,
+    val tint: Color,
+    val title: String,
+    val desc: String
+)
+
 @Composable
-private fun InfoCard(
-    icon: ImageVector,
-    iconTint: androidx.compose.ui.graphics.Color,
-    title: String,
-    description: String
-) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MidnightSurfaceHigh,
-        border = BorderStroke(1.dp, MidnightBorderSubtle),
-        modifier = Modifier.fillMaxWidth()
+private fun SecurityBadgeRow(label: String, ok: Boolean) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = iconTint,
-                modifier = Modifier.size(22.dp)
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Column {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = SilverPure
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = SilverMetallic
-                )
-            }
-        }
+        Icon(
+            imageVector = Icons.Outlined.VerifiedUser,
+            contentDescription = null,
+            tint = if (ok) EmeraldSuccess else CoralError,
+            modifier = Modifier.size(15.dp)
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = SilverPure
+        )
     }
 }
