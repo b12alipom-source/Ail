@@ -18,8 +18,8 @@ import java.util.UUID
 
 private const val TAG = "AudioExtractor"
 private const val MAX_SINGLE_INLINE_BYTES = 14 * 1024 * 1024
-private const val CHUNK_DURATION_US = 240_000_000L // 4 minutes per chunk
-private const val MAX_CHUNK_RAW_BYTES = 8 * 1024 * 1024 // 8 MB safety ceiling per chunk
+private const val CHUNK_DURATION_US = 45_000_000L // 45 seconds per chunk for fast, reliable upload & inference
+private const val MAX_CHUNK_RAW_BYTES = 2 * 1024 * 1024 // 2 MB ceiling per chunk
 
 data class AudioChunk(
     val bytes: ByteArray,

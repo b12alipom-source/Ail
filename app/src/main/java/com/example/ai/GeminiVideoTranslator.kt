@@ -4,6 +4,7 @@ import android.util.Log
 import com.example.data.GeneratedSegment
 import com.example.data.LanguageOption
 import com.example.data.SupportedLanguages
+import com.example.data.TranslationStyle
 import com.example.data.VideoTranslationResult
 import com.example.data.VoiceTranslationResult
 import com.example.data.db.SubtitleCueEntity
@@ -46,7 +47,7 @@ class GeminiVideoTranslator {
                         "startMs" to Schema.integer(description = "Segment start time in milliseconds relative to this clip"),
                         "endMs" to Schema.integer(description = "Segment end time in milliseconds relative to this clip"),
                         "originalText" to Schema.string(description = "Accurate verbatim transcription in original spoken language"),
-                        "translatedText" to Schema.string(description = "Natural, fluent translation into the target language")
+                        "translatedText" to Schema.string(description = "Natural, context-aware translation into the target language")
                     )
                 ),
                 description = "Chronological subtitle segments covering all speech in this audio clip"
@@ -57,13 +58,13 @@ class GeminiVideoTranslator {
     private val retranslationSchema = Schema.obj(
         properties = mapOf(
             "summary" to Schema.string(
-                description = "Concise 1-2 sentence summary written in the new target language"
+                description = "Concise 1-2 sentence summary written in the target language"
             ),
             "translations" to Schema.array(
                 items = Schema.obj(
                     properties = mapOf(
                         "orderIndex" to Schema.integer(description = "Original orderIndex from input"),
-                        "translatedText" to Schema.string(description = "Translated subtitle text in the new target language")
+                        "translatedText" to Schema.string(description = "Refined, natural subtitle text in the target language")
                     )
                 ),
                 description = "Translated lines matching every input orderIndex"
@@ -161,6 +162,8 @@ class GeminiVideoTranslator {
         startOffsetMs: Long,
         sourceLanguage: LanguageOption,
         targetLanguage: LanguageOption,
+        translationStyle: TranslationStyle = TranslationStyle.BALANCED,
+        previousContext: String = "",
         allowEmptySegments: Boolean = false
     ): VideoTranslationResult {
         val sourceHint = if (sourceLanguage.code == SupportedLanguages.autoDetect.code) {
@@ -175,18 +178,25 @@ class GeminiVideoTranslator {
             "Provide accurate millisecond timestamps starting from 0."
         }
 
+        val contextBlock = if (previousContext.isNotBlank()) {
+            "\n9. Continuity context from the immediately preceding clip (preserve terminology, pronouns, names, and tone seamlessly):\n$previousContext"
+        } else {
+            ""
+        }
+
         val prompt = """
-            You are an expert broadcast subtitle engineer and literary translator.
-            Listen carefully to the provided audio/video stream and produce synchronized subtitles.
+            You are an expert broadcast subtitle engineer, linguist, and literary translator.
+            Listen carefully to the provided audio/video stream and produce synchronized, high-precision subtitles.
+            Translation Style: ${translationStyle.promptGuidance}
             Rules:
             1. $sourceHint
             2. Transcribe every spoken phrase verbatim in its original script inside `originalText`.
-            3. Translate each segment accurately and naturally into ${targetLanguage.nativeName} (ISO: ${targetLanguage.code}, Arabic label: ${targetLanguage.arabicName}) inside `translatedText`.
-            4. Split speech into clean, readable subtitle cues (typically 1.5 to 5 seconds each, 1-2 short lines per cue).
+            3. Translate each segment thoughtfully into ${targetLanguage.nativeName} (ISO: ${targetLanguage.code}, Arabic label: ${targetLanguage.arabicName}) inside `translatedText`, respecting context, idioms, and natural grammar rather than stiff word-for-word translation.
+            4. Split speech into clean, readable subtitle cues (typically 1.5 to 4.5 seconds each, concise 1-2 lines per cue).
             5. $durationHint Ensure startMs < endMs and segments are ordered chronologically without overlapping.
             6. Write `summary` as a clear 1-2 sentence overview in ${targetLanguage.nativeName}.
             7. Write `detectedLanguageNameArabic` in Arabic (e.g. الإنجليزية, العربية, الفرنسية).
-            8. If there is no speech in this clip, return an empty `segments` array.
+            8. If there is no speech in this clip, return an empty `segments` array.$contextBlock
         """.trimIndent()
 
         try {
@@ -206,7 +216,7 @@ class GeminiVideoTranslator {
             return parseTranslationJson(rawJson, chunkDurationMs, startOffsetMs, allowEmptySegments)
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Transcription timed out", e)
-            throw IllegalStateException("استغرقت معالجة هذا الجزء وقتاً طويلاً. تأكد من الاتصال وحاول مجدداً.")
+            throw IllegalStateException("استغرقت معالجة هذا الجزء وقتاً طويلاً. جرّب اختيار مقطع أقصر أو تأكد من استقرار الشبكة.")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -221,7 +231,9 @@ class GeminiVideoTranslator {
         audioBytes: ByteArray,
         mimeType: String,
         sourceLanguage: LanguageOption,
-        targetLanguage: LanguageOption
+        targetLanguage: LanguageOption,
+        translationStyle: TranslationStyle = TranslationStyle.BALANCED,
+        conversationContext: String = ""
     ): VoiceTranslationResult {
         val sourceHint = if (sourceLanguage.code == SupportedLanguages.autoDetect.code) {
             "Auto-detect the spoken language."
@@ -229,13 +241,20 @@ class GeminiVideoTranslator {
             "The speaker is speaking ${sourceLanguage.nativeName} (${sourceLanguage.code})."
         }
 
+        val contextNote = if (conversationContext.isNotBlank()) {
+            "\n5. Recent dialogue context for pronoun and topic continuity:\n$conversationContext"
+        } else {
+            ""
+        }
+
         val prompt = """
-            You are an instant real-time voice interpreter.
+            You are an expert simultaneous voice interpreter.
+            Translation Style: ${translationStyle.promptGuidance}
             Listen to the recorded voice message and:
             1. $sourceHint
             2. Transcribe the exact spoken words in `originalText`.
-            3. Translate them naturally and idiomatically into ${targetLanguage.nativeName} (${targetLanguage.code}) in `translatedText`.
-            4. Set `detectedLanguageNameArabic` in Arabic (e.g. العربية, الإنجليزية, التركية).
+            3. Translate them idiomatically and naturally into ${targetLanguage.nativeName} (${targetLanguage.code}) in `translatedText`, avoiding literal machine translation.
+            4. Set `detectedLanguageNameArabic` in Arabic (e.g. العربية, الإنجليزية, التركية).$contextNote
         """.trimIndent()
 
         try {
@@ -286,7 +305,8 @@ class GeminiVideoTranslator {
     suspend fun retranslateCues(
         cues: List<SubtitleCueEntity>,
         sourceLanguageName: String,
-        newTargetLanguage: LanguageOption
+        newTargetLanguage: LanguageOption,
+        translationStyle: TranslationStyle = TranslationStyle.BALANCED
     ): Pair<String, Map<Long, String>> {
         val payloadArray = JSONArray()
         cues.forEach { cue ->
@@ -299,13 +319,54 @@ class GeminiVideoTranslator {
         }
 
         val prompt = """
-            Translate the following subtitle segments from $sourceLanguageName into ${newTargetLanguage.nativeName} (ISO: ${newTargetLanguage.code}).
-            Preserve the exact meaning, tone, and concise subtitle phrasing for each `orderIndex`.
-            Also provide a 1-2 sentence `summary` in ${newTargetLanguage.nativeName}.
+            You are an expert literary and subtitle translator.
+            Translation Style: ${translationStyle.promptGuidance}
+            Translate the following connected subtitle segments from $sourceLanguageName into ${newTargetLanguage.nativeName} (ISO: ${newTargetLanguage.code}).
+            Use the full sequence context so pronouns, terminology, and sentence flow stay coherent across consecutive `orderIndex` entries.
+            Also provide a clear 1-2 sentence `summary` in ${newTargetLanguage.nativeName}.
             Input segments JSON:
             $payloadArray
         """.trimIndent()
 
+        return runBatchTranslationPrompt(prompt, cues)
+    }
+
+    suspend fun polishCuesWithContext(
+        cues: List<SubtitleCueEntity>,
+        sourceLanguageName: String,
+        targetLanguage: LanguageOption,
+        translationStyle: TranslationStyle
+    ): Pair<String, Map<Long, String>> {
+        val payloadArray = JSONArray()
+        cues.forEach { cue ->
+            payloadArray.put(
+                JSONObject().apply {
+                    put("orderIndex", cue.orderIndex)
+                    put("originalText", cue.originalText)
+                    put("currentTranslation", cue.translatedText)
+                }
+            )
+        }
+
+        val prompt = """
+            You are a senior subtitle editor and bilingual literary stylist.
+            Review the ENTIRE transcript below in $sourceLanguageName alongside its draft translation in ${targetLanguage.nativeName} (ISO: ${targetLanguage.code}).
+            Style target: ${translationStyle.promptGuidance}
+            Task:
+            1. Polish every `translatedText` by reading surrounding lines so split sentences, idioms, technical terms, and pronouns flow naturally and cohesively.
+            2. Fix any awkward literal phrasing while keeping each cue concise and timed to its `orderIndex`.
+            3. Write an insightful, concise 1-2 sentence `summary` in ${targetLanguage.nativeName}.
+            Input segments JSON:
+            $payloadArray
+        """.trimIndent()
+
+        return runBatchTranslationPrompt(prompt, cues)
+    }
+
+    private suspend fun runBatchTranslationPrompt(
+        prompt: String,
+        cues: List<SubtitleCueEntity>
+    ): Pair<String, Map<Long, String>> {
         try {
             val response = generateWithFallback(
                 primaryModel = retranslationModel,
@@ -332,14 +393,14 @@ class GeminiVideoTranslator {
             }
             return summary to resultMap
         } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Retranslation timed out", e)
-            throw IllegalStateException("انتهت مهلة إعادة الترجمة. حاول مرة أخرى.")
+            Log.e(TAG, "Batch translation timed out", e)
+            throw IllegalStateException("انتهت مهلة معالجة النص الذكي. حاول مرة أخرى.")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Retranslation failed", e)
+            Log.e(TAG, "Batch translation failed", e)
             throw IllegalStateException(
-                formatUserFacingError(e, "تعذرت إعادة الترجمة.")
+                formatUserFacingError(e, "تعذرت إعادة صياغة الترجمة.")
             )
         }
     }
@@ -352,7 +413,9 @@ class GeminiVideoTranslator {
         try {
             return withTimeout(AI_TIMEOUT_MS) { call(primaryModel) }
         } catch (e: CancellationException) {
-            throw e
+            if (e !is TimeoutCancellationException) throw e
+            Log.w(TAG, "Primary model $PRIMARY_MODEL_NAME timed out, switching to fast fallback $FALLBACK_MODEL_NAME")
+            return withTimeout(AI_TIMEOUT_MS) { call(fallbackModel) }
         } catch (e: Exception) {
             if (!isTransientCapacityError(e)) throw e
             Log.w(TAG, "Primary model $PRIMARY_MODEL_NAME under high demand, falling back to $FALLBACK_MODEL_NAME", e)

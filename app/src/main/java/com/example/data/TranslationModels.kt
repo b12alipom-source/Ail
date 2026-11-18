@@ -45,6 +45,33 @@ enum class SubtitleDisplayMode {
     ORIGINAL_ONLY
 }
 
+enum class TranslationStyle(
+    val arabicLabel: String,
+    val arabicHint: String,
+    val promptGuidance: String
+) {
+    BALANCED(
+        arabicLabel = "ذكي متوازن",
+        arabicHint = "أسلوب احترافي دقيق وطبيعي",
+        promptGuidance = "Deliver accurate, fluent, natural-sounding translations preserving speaker intent, idioms, and conversational flow."
+    ),
+    CINEMATIC(
+        arabicLabel = "أدبي وسينمائي",
+        arabicHint = "يصون المعاني المجازية والمشاعر",
+        promptGuidance = "Translate with expressive, cinematic, and literary nuance. Adapt idioms, humor, emotion, and cultural metaphors naturally into eloquent target phrasing."
+    ),
+    ACADEMIC(
+        arabicLabel = "دقيق وأكاديمي",
+        arabicHint = "يحافظ على المصطلحات العلمية والتقنية",
+        promptGuidance = "Use formal, precise, and technically faithful terminology suitable for lectures, documentaries, tutorials, and professional briefings."
+    ),
+    SIMPLE(
+        arabicLabel = "مبسط وواضح",
+        arabicHint = "صياغة سهلة ومباشرة وسريعة القراءة",
+        promptGuidance = "Use clear, accessible, concise contemporary phrasing that is effortless to read quickly while watching or listening."
+    )
+}
+
 enum class ExportFormat(val extension: String, val mimeType: String, val arabicLabel: String) {
     SRT("srt", "application/x-subrip", "ملف ترجمة SRT"),
     VTT("vtt", "text/vtt", "ملف ترجمة WebVTT"),

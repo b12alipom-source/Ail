@@ -31,14 +31,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.GraphicEq
-import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -70,6 +71,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.SupportedLanguages
+import com.example.data.TranslationStyle
 import com.example.data.db.VoiceTranslationEntity
 import com.example.export.SubtitleExporter
 import com.example.media.VoiceSpeaker
@@ -97,6 +99,7 @@ fun VoiceTranslatorScreen(
     val context = LocalContext.current
     val sourceLanguage by viewModel.sourceLanguage.collectAsStateWithLifecycle()
     val targetLanguage by viewModel.targetLanguage.collectAsStateWithLifecycle()
+    val translationStyle by viewModel.translationStyle.collectAsStateWithLifecycle()
     val voiceUiState by viewModel.voiceUiState.collectAsStateWithLifecycle()
     val voiceHistory by viewModel.voiceHistory.collectAsStateWithLifecycle()
 
@@ -148,18 +151,52 @@ fun VoiceTranslatorScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
-                Column {
-                    Text(
-                        text = stringResource(R.string.voice_title),
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = SilverPure
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = stringResource(R.string.voice_subtitle),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SilverMuted
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.voice_title),
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = SilverPure
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = stringResource(R.string.voice_subtitle),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SilverMuted
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(99.dp),
+                        color = MidnightSurfaceHigh,
+                        border = BorderStroke(1.dp, MidnightBorder),
+                        modifier = Modifier.clickable {
+                            val styles = TranslationStyle.entries
+                            val nextIndex = (styles.indexOf(translationStyle) + 1) % styles.size
+                            viewModel.setTranslationStyle(styles[nextIndex])
+                        }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.AutoAwesome,
+                                contentDescription = "نمط الترجمة",
+                                tint = IceSapphireGlow,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = translationStyle.arabicLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = SilverPure
+                            )
+                        }
+                    }
                 }
             }
 
@@ -575,7 +612,7 @@ private fun VoiceResultCard(
                         modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Outlined.VolumeUp,
+                            imageVector = Icons.AutoMirrored.Outlined.VolumeUp,
                             contentDescription = stringResource(R.string.voice_listen_desc),
                             tint = SilverPure,
                             modifier = Modifier.size(20.dp)

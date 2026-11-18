@@ -11,6 +11,7 @@ import com.example.data.LanguageOption
 import com.example.data.SubtitleDisplayMode
 import com.example.data.SupportedLanguages
 import com.example.data.TranslationRepository
+import com.example.data.TranslationStyle
 import com.example.data.VideoTranslationResult
 import com.example.data.db.AppDatabase
 import com.example.data.db.SubtitleCueEntity
@@ -103,6 +104,9 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
     private val _targetLanguage = MutableStateFlow(SupportedLanguages.allTargetLanguages.first())
     val targetLanguage: StateFlow<LanguageOption> = _targetLanguage.asStateFlow()
 
+    private val _translationStyle = MutableStateFlow(TranslationStyle.BALANCED)
+    val translationStyle: StateFlow<TranslationStyle> = _translationStyle.asStateFlow()
+
     private val _processingState = MutableStateFlow<ProcessingUiState>(ProcessingUiState.Idle)
     val processingState: StateFlow<ProcessingUiState> = _processingState.asStateFlow()
 
@@ -128,6 +132,10 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         _targetLanguage.value = language
     }
 
+    fun setTranslationStyle(style: TranslationStyle) {
+        _translationStyle.value = style
+    }
+
     fun swapLanguages() {
         val currentSource = _sourceLanguage.value
         val currentTarget = _targetLanguage.value
@@ -149,6 +157,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         processingJob?.cancel()
         val chosenSource = _sourceLanguage.value
         val chosenTarget = _targetLanguage.value
+        val chosenStyle = _translationStyle.value
 
         processingJob = viewModelScope.launch {
             _processingState.value = ProcessingUiState.ExtractingAudio("مقطع فيديو")
@@ -159,6 +168,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                 var detectedCode = chosenSource.code
                 var detectedNameAr = chosenSource.arabicName
                 var combinedSummary = ""
+                var previousContext = ""
 
                 payload.chunks.forEachIndexed { index, chunk ->
                     _processingState.value = ProcessingUiState.Translating(
@@ -175,6 +185,8 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                         startOffsetMs = chunk.startOffsetMs,
                         sourceLanguage = chosenSource,
                         targetLanguage = chosenTarget,
+                        translationStyle = chosenStyle,
+                        previousContext = previousContext,
                         allowEmptySegments = totalChunks > 1
                     )
 
@@ -187,6 +199,12 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                             chunkResult.summary
                         } else {
                             "$combinedSummary ${chunkResult.summary}"
+                        }
+                    }
+                    if (chunkResult.segments.isNotEmpty()) {
+                        val trailing = chunkResult.segments.takeLast(2)
+                        previousContext = trailing.joinToString("\n") { seg ->
+                            "- \"${seg.originalText}\" -> \"${seg.translatedText}\""
                         }
                     }
                     mergedSegments.addAll(chunkResult.segments)
@@ -280,6 +298,10 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
 
         val chosenSource = _sourceLanguage.value
         val chosenTarget = _targetLanguage.value
+        val chosenStyle = _translationStyle.value
+        val recentTurnsContext = voiceHistory.value.take(2).reversed().joinToString("\n") { entry ->
+            "- \"${entry.originalText}\" -> \"${entry.translatedText}\""
+        }
 
         voiceProcessingJob?.cancel()
         voiceProcessingJob = viewModelScope.launch {
@@ -295,7 +317,9 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     audioBytes = audioBytes,
                     mimeType = "audio/mp4",
                     sourceLanguage = chosenSource,
-                    targetLanguage = chosenTarget
+                    targetLanguage = chosenTarget,
+                    translationStyle = chosenStyle,
+                    conversationContext = recentTurnsContext
                 )
                 repository.saveVoiceTranslation(chosenTarget, result)
                 _voiceUiState.value = VoiceUiState.Idle
@@ -415,6 +439,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
 
     fun changeStudioTargetLanguage(projectId: Long, newLanguage: LanguageOption) {
         if (_isReTranslating.value) return
+        val chosenStyle = _translationStyle.value
         viewModelScope.launch {
             _isReTranslating.value = true
             _reTranslateError.value = null
@@ -428,7 +453,8 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                 val (newSummary, translatedMap) = translator.retranslateCues(
                     cues = cues,
                     sourceLanguageName = project.sourceLanguageName,
-                    newTargetLanguage = newLanguage
+                    newTargetLanguage = newLanguage,
+                    translationStyle = chosenStyle
                 )
                 repository.applyReTranslation(
                     projectId = projectId,
@@ -441,6 +467,40 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 Log.e(TAG, "Instant re-translation failed", e)
                 _reTranslateError.value = e.localizedMessage ?: "تعذرت إعادة الترجمة."
+            } finally {
+                _isReTranslating.value = false
+            }
+        }
+    }
+
+    fun polishStudioTranslation(projectId: Long) {
+        if (_isReTranslating.value) return
+        val chosenStyle = _translationStyle.value
+        viewModelScope.launch {
+            _isReTranslating.value = true
+            _reTranslateError.value = null
+            try {
+                val project = repository.getProject(projectId) ?: return@launch
+                val cues = repository.getCues(projectId)
+                if (cues.isEmpty()) return@launch
+                val targetOption = SupportedLanguages.findByCode(project.targetLanguageCode)
+                val (newSummary, polishedMap) = translator.polishCuesWithContext(
+                    cues = cues,
+                    sourceLanguageName = project.sourceLanguageName,
+                    targetLanguage = targetOption,
+                    translationStyle = chosenStyle
+                )
+                repository.applyReTranslation(
+                    projectId = projectId,
+                    targetLanguage = targetOption,
+                    summary = newSummary.ifBlank { project.summary },
+                    translationsByCueId = polishedMap
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "AI polish failed", e)
+                _reTranslateError.value = e.localizedMessage ?: "تعذر تحسين الترجمة بالذكاء الاصطناعي."
             } finally {
                 _isReTranslating.value = false
             }

@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.Translate
@@ -179,6 +180,7 @@ fun StudioScreen(
                     onBack = onBack,
                     onOpenExport = { showExportSheet = true },
                     onOpenLanguageSwitch = { showTargetLangPicker = true },
+                    onPolishTranslation = { viewModel.polishStudioTranslation(projectId) },
                     onDisplayModeChange = { viewModel.setDisplayMode(it) },
                     onFontScaleAdjust = { viewModel.adjustFontScale(it) },
                     onPlaybackPosition = { viewModel.updatePlaybackPosition(it) },
@@ -235,6 +237,7 @@ private fun StudioReadyContent(
     onBack: () -> Unit,
     onOpenExport: () -> Unit,
     onOpenLanguageSwitch: () -> Unit,
+    onPolishTranslation: () -> Unit,
     onDisplayModeChange: (SubtitleDisplayMode) -> Unit,
     onFontScaleAdjust: (Float) -> Unit,
     onPlaybackPosition: (Long) -> Unit,
@@ -403,7 +406,9 @@ private fun StudioReadyContent(
                         TranscriptSectionHeader(
                             sourceName = state.project.sourceLanguageName,
                             targetName = state.project.targetLanguageName,
-                            cueCount = state.cues.size
+                            cueCount = state.cues.size,
+                            isBusy = state.isReTranslating,
+                            onPolishClick = onPolishTranslation
                         )
                         TranscriptCueList(
                             cues = state.cues,
@@ -449,7 +454,9 @@ private fun StudioReadyContent(
                     TranscriptSectionHeader(
                         sourceName = state.project.sourceLanguageName,
                         targetName = state.project.targetLanguageName,
-                        cueCount = state.cues.size
+                        cueCount = state.cues.size,
+                        isBusy = state.isReTranslating,
+                        onPolishClick = onPolishTranslation
                     )
 
                     TranscriptCueList(
@@ -807,23 +814,54 @@ private fun SummaryPillCard(summary: String) {
 private fun TranscriptSectionHeader(
     sourceName: String,
     targetName: String,
-    cueCount: Int
+    cueCount: Int,
+    isBusy: Boolean,
+    onPolishClick: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = stringResource(R.string.transcript_title),
-            style = MaterialTheme.typography.titleMedium,
-            color = SilverPure
-        )
-        Text(
-            text = "$sourceName ← $targetName ($cueCount)",
-            style = MaterialTheme.typography.labelMedium,
-            color = SilverMuted
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.transcript_title),
+                style = MaterialTheme.typography.titleMedium,
+                color = SilverPure
+            )
+            Text(
+                text = "$sourceName ← $targetName ($cueCount)",
+                style = MaterialTheme.typography.labelMedium,
+                color = SilverMuted
+            )
+        }
+        Surface(
+            shape = RoundedCornerShape(99.dp),
+            color = MidnightSurfaceHigh,
+            border = BorderStroke(1.dp, IceSapphire.copy(alpha = 0.55f)),
+            modifier = Modifier
+                .testTag("studio_polish_button")
+                .clickable(enabled = !isBusy) { onPolishClick() }
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.AutoAwesome,
+                    contentDescription = "تحسين ذكي للترجمة",
+                    tint = IceSapphireGlow,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = "تحسين ذكي",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = SilverPure
+                )
+            }
+        }
     }
 }
 

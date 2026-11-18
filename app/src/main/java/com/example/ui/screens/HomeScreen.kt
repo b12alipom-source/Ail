@@ -37,6 +37,9 @@ import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.VideoFile
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ClosedCaption
 import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.DeleteOutline
@@ -74,6 +77,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.LanguageOption
 import com.example.data.SupportedLanguages
+import com.example.data.TranslationStyle
 import com.example.data.db.VideoProjectEntity
 import com.example.export.SubtitleExporter
 import com.example.ui.BayanViewModel
@@ -103,6 +107,7 @@ fun HomeScreen(
     val projects by viewModel.projects.collectAsStateWithLifecycle()
     val sourceLanguage by viewModel.sourceLanguage.collectAsStateWithLifecycle()
     val targetLanguage by viewModel.targetLanguage.collectAsStateWithLifecycle()
+    val translationStyle by viewModel.translationStyle.collectAsStateWithLifecycle()
     val processingState by viewModel.processingState.collectAsStateWithLifecycle()
 
     var showSourcePicker by remember { mutableStateOf(false) }
@@ -161,6 +166,8 @@ fun HomeScreen(
                     HeroTranslationStudioCard(
                         sourceLanguage = sourceLanguage,
                         targetLanguage = targetLanguage,
+                        translationStyle = translationStyle,
+                        onSelectStyle = { viewModel.setTranslationStyle(it) },
                         onSelectSourceClick = { showSourcePicker = true },
                         onSelectTargetClick = { showTargetPicker = true },
                         onSwapLanguages = { viewModel.swapLanguages() },
@@ -349,6 +356,8 @@ private fun BayanTopHeader(onCloudBadgeClick: () -> Unit) {
 private fun HeroTranslationStudioCard(
     sourceLanguage: LanguageOption,
     targetLanguage: LanguageOption,
+    translationStyle: TranslationStyle,
+    onSelectStyle: (TranslationStyle) -> Unit,
     onSelectSourceClick: () -> Unit,
     onSelectTargetClick: () -> Unit,
     onSwapLanguages: () -> Unit,
@@ -417,6 +426,11 @@ private fun HeroTranslationStudioCard(
                         .testTag("target_language_button")
                 )
             }
+
+            TranslationStyleSelectorStrip(
+                selectedStyle = translationStyle,
+                onSelectStyle = onSelectStyle
+            )
 
             Button(
                 onClick = onPickVideoClick,
@@ -506,6 +520,62 @@ private fun LanguageSelectorChip(
                         style = MaterialTheme.typography.labelSmall,
                         color = IceSapphireGlow,
                         modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TranslationStyleSelectorStrip(
+    selectedStyle: TranslationStyle,
+    onSelectStyle: (TranslationStyle) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.AutoAwesome,
+                contentDescription = null,
+                tint = IceSapphireGlow,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = "نمط الذكاء الاصطناعي: ${selectedStyle.arabicHint}",
+                style = MaterialTheme.typography.labelMedium,
+                color = SilverMetallic,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            TranslationStyle.entries.forEach { style ->
+                val isSelected = style == selectedStyle
+                Surface(
+                    shape = RoundedCornerShape(99.dp),
+                    color = if (isSelected) IceSapphire.copy(alpha = 0.22f) else MidnightNavy.copy(alpha = 0.7f),
+                    border = BorderStroke(
+                        1.dp,
+                        if (isSelected) IceSapphireGlow else MidnightBorderSubtle
+                    ),
+                    modifier = Modifier
+                        .testTag("style_${style.name.lowercase()}")
+                        .clickable { onSelectStyle(style) }
+                ) {
+                    Text(
+                        text = style.arabicLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) SilverPure else SilverMuted,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                     )
                 }
             }
