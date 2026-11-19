@@ -63,6 +63,7 @@ import com.example.data.StudyAiTier
 import com.example.data.StudyEngineConfig
 import com.example.data.StudyMethod
 import com.example.data.db.VideoProjectEntity
+import com.example.ui.PersonalKeyVerificationState
 import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CoralError
 import com.example.ui.theme.EmeraldSuccess
@@ -83,8 +84,10 @@ internal fun StudyAiSettingsSheet(
     engineConfig: StudyEngineConfig,
     appCheckState: AppCheckDiagnosticState,
     isCheckingAppCheck: Boolean,
+    personalKeyVerifyState: PersonalKeyVerificationState,
     onSelectTier: (StudyAiTier) -> Unit,
     onSavePersonalKey: (String) -> Unit,
+    onVerifyPersonalKey: (String) -> Unit,
     onTogglePreferPersonalKey: (Boolean) -> Unit,
     onClearPersonalKey: () -> Unit,
     onRunAppCheckCheck: () -> Unit,
@@ -192,7 +195,7 @@ internal fun StudyAiSettingsSheet(
                     }
 
                     Text(
-                        text = "التطبيق يعمل افتراضياً عبر سحابة Firebase بدون مفتاح. إذا واجهت رفض App Check بسبب التثبيت الجانبي (APK) أو رغبت بتوليد الصور عبر مفتاحك الشخصي من Google AI Studio، أدخله هنا ليُحفظ بأمان على جهازك فقط.",
+                        text = "يشغّل مساعد الدراسة، المعلم الذكي، توليد صور الإنفوجرافيك (Nano Banana Pro)، واستوديو الفيديو والمترجم الصوتي بأحدث نماذج Gemini 3.1 Pro و Gemini 3 Flash. عند تثبيت APK جانبي قد يرفض خادم Firebase App Check الشهادة مؤقتاً (403)، لذا تفعيل مفتاح Google AI Studio الشخصي هنا يشغّل كامل القوة فوراً على جهازك.",
                         style = MaterialTheme.typography.bodySmall,
                         color = SilverMuted
                     )
@@ -223,18 +226,60 @@ internal fun StudyAiSettingsSheet(
                             .testTag("personal_gemini_key_input")
                     )
 
+                    personalKeyVerifyState.message?.let { verifyMsg ->
+                        val statusColor = when (personalKeyVerifyState.isSuccess) {
+                            true -> EmeraldSuccess
+                            false -> CoralError
+                            null -> IceSapphireGlow
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = statusColor.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, statusColor.copy(alpha = 0.4f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (personalKeyVerifyState.isVerifying) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = IceSapphireGlow
+                                    )
+                                }
+                                Text(
+                                    text = verifyMsg,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = SilverPure
+                                )
+                            }
+                        }
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
-                            enabled = apiKeyDraft.trim().length >= 16,
+                            enabled = apiKeyDraft.trim().length >= 16 && !personalKeyVerifyState.isVerifying,
                             onClick = { onSavePersonalKey(apiKeyDraft) },
                             colors = ButtonDefaults.buttonColors(containerColor = SilverPure, contentColor = MidnightVoid),
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("حفظ وتفعيل المفتاح", fontWeight = FontWeight.Bold)
+                            Text("حفظ وفحص وتفعيل", fontWeight = FontWeight.Bold)
+                        }
+                        OutlinedButton(
+                            enabled = apiKeyDraft.trim().length >= 16 && !personalKeyVerifyState.isVerifying,
+                            onClick = { onVerifyPersonalKey(apiKeyDraft) },
+                            border = BorderStroke(1.dp, IceSapphireGlow.copy(alpha = 0.6f)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.testTag("verify_personal_key_button")
+                        ) {
+                            Text("فحص", color = IceSapphireGlow)
                         }
                         if (engineConfig.hasPersonalKey) {
                             OutlinedButton(

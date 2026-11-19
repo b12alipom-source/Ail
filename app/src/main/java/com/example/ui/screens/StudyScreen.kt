@@ -129,6 +129,7 @@ fun StudyScreen(
     val pendingChatAttachment by viewModel.pendingChatAttachment.collectAsStateWithLifecycle()
     val appCheckState by viewModel.appCheckStatus.collectAsStateWithLifecycle()
     val isCheckingAppCheck by viewModel.isCheckingAppCheck.collectAsStateWithLifecycle()
+    val personalKeyVerifyState by viewModel.personalKeyVerifyState.collectAsStateWithLifecycle()
 
     LaunchedEffect(notebooks, activeNotebookId) {
         if (activeNotebookId == null && notebooks.isNotEmpty()) {
@@ -465,8 +466,10 @@ fun StudyScreen(
             engineConfig = engineConfig,
             appCheckState = appCheckState,
             isCheckingAppCheck = isCheckingAppCheck,
+            personalKeyVerifyState = personalKeyVerifyState,
             onSelectTier = { viewModel.setStudyAiTier(it) },
             onSavePersonalKey = { viewModel.savePersonalGeminiKey(it) },
+            onVerifyPersonalKey = { viewModel.verifyPersonalGeminiKey(it) },
             onTogglePreferPersonalKey = { viewModel.setPreferPersonalGeminiKey(it) },
             onClearPersonalKey = { viewModel.clearPersonalGeminiKey() },
             onRunAppCheckCheck = { viewModel.runAppCheckDiagnostics() },

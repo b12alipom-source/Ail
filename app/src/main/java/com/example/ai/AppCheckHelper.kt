@@ -72,7 +72,6 @@ fun configureAppCheck(context: Context, intent: Intent?) {
         }
 
         val appCheck = FirebaseAppCheck.getInstance()
-        appCheck.setTokenAutoRefreshEnabled(true)
 
         if (BuildConfig.DEBUG) {
             installedProviderLabel = "Debug Provider"
@@ -96,6 +95,7 @@ fun configureAppCheck(context: Context, intent: Intent?) {
                 appCheck.installAppCheckProviderFactory(
                     DebugAppCheckProviderFactory.getInstance()
                 )
+                appCheck.setTokenAutoRefreshEnabled(true)
                 appCheckFactoryInstalled = true
                 Log.d(TAG, "DebugAppCheckProviderFactory installed.")
             }
@@ -113,6 +113,7 @@ fun configureAppCheck(context: Context, intent: Intent?) {
                     appCheck.installAppCheckProviderFactory(
                         RecaptchaAppCheckProviderFactory.getInstance(siteKey)
                     )
+                    appCheck.setTokenAutoRefreshEnabled(true)
                     appCheckFactoryInstalled = true
                     Log.d(TAG, "RecaptchaAppCheckProviderFactory installed.")
                 } else {

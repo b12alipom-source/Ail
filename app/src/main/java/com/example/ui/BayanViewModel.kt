@@ -114,6 +114,12 @@ sealed interface StudioUiState {
     data class Error(val message: String) : StudioUiState
 }
 
+data class PersonalKeyVerificationState(
+    val isVerifying: Boolean = false,
+    val isSuccess: Boolean? = null,
+    val message: String? = null
+)
+
 class BayanViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: TranslationRepository by lazy {
@@ -327,6 +333,9 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
     private val _isCheckingAppCheck = MutableStateFlow(false)
     val isCheckingAppCheck: StateFlow<Boolean> = _isCheckingAppCheck.asStateFlow()
 
+    private val _personalKeyVerifyState = MutableStateFlow(PersonalKeyVerificationState())
+    val personalKeyVerifyState: StateFlow<PersonalKeyVerificationState> = _personalKeyVerifyState.asStateFlow()
+
     private val _processingState = MutableStateFlow<ProcessingUiState>(ProcessingUiState.Idle)
     val processingState: StateFlow<ProcessingUiState> = _processingState.asStateFlow()
 
@@ -486,8 +495,9 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     AudioExtractor.resolveTitleAndDuration(appContext, uri)
                 }
 
-                // If user enabled 100% Offline Mode or App Check is currently in cooldown, jump directly to on-device transcription
-                if (_offlineEngineMode.value || isAppCheckRateLimited()) {
+                // If user enabled 100% Offline Mode or App Check is in cooldown without a personal key, jump directly to on-device transcription
+                var activePersonalKey = activePersonalKeyForTranslation()
+                if (_offlineEngineMode.value || (activePersonalKey.isBlank() && isAppCheckRateLimited())) {
                     val reasonLabel = if (_offlineEngineMode.value) {
                         "الوضع المحلي المستقل مفعّل"
                     } else {
@@ -555,13 +565,39 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                                 targetLanguage = chosenTarget,
                                 translationStyle = chosenStyle,
                                 previousContext = previousContext,
-                                allowEmptySegments = totalChunks > 1
+                                allowEmptySegments = totalChunks > 1,
+                                personalApiKey = activePersonalKey
                             )
                         )
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        Result.failure(e)
+                        val fallbackKey = studyAiPreferences.currentConfig().personalApiKey
+                        if (activePersonalKey.isBlank() && fallbackKey.isNotBlank() && isCloudFallbackEligible(e)) {
+                            Log.w(TAG, "Firebase video chunk failed; retrying via saved personal Gemini key", e)
+                            try {
+                                val rescued = translator.transcribeAndTranslateChunk(
+                                    mediaBytes = chunk.bytes,
+                                    mimeType = chunk.mimeType,
+                                    chunkDurationMs = chunk.durationMs,
+                                    startOffsetMs = chunk.startOffsetMs,
+                                    sourceLanguage = chosenSource,
+                                    targetLanguage = chosenTarget,
+                                    translationStyle = chosenStyle,
+                                    previousContext = previousContext,
+                                    allowEmptySegments = totalChunks > 1,
+                                    personalApiKey = fallbackKey
+                                )
+                                activePersonalKey = fallbackKey
+                                Result.success(rescued)
+                            } catch (e2: CancellationException) {
+                                throw e2
+                            } catch (e2: Exception) {
+                                Result.failure(e2)
+                            }
+                        } else {
+                            Result.failure(e)
+                        }
                     }
 
                     if (chunkOutcome.isSuccess) {
@@ -796,7 +832,8 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                             cues = tempEntities,
                             sourceLanguageName = detectedSourceOption.arabicName,
                             newTargetLanguage = chosenTarget,
-                            translationStyle = chosenStyle
+                            translationStyle = chosenStyle,
+                            personalApiKey = activePersonalKeyForTranslation()
                         )
                         if (cloudSummary.isNotBlank()) summary = cloudSummary
                         translatedSegments = parsedSegments.mapIndexed { idx, seg ->
@@ -869,7 +906,8 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         ) return
 
         _voiceNotice.value = null
-        if (_offlineEngineMode.value || isAppCheckRateLimited()) {
+        val activePersonalKey = activePersonalKeyForTranslation()
+        if (_offlineEngineMode.value || (activePersonalKey.isBlank() && isAppCheckRateLimited())) {
             if (!_offlineEngineMode.value) {
                 _voiceNotice.value = "التحقق السحابي في فترة تهدئة — تم التحويل تلقائياً للإملاء والترجمة المحلية."
             }
@@ -1054,7 +1092,8 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     sourceLanguage = chosenSource,
                     targetLanguage = chosenTarget,
                     translationStyle = chosenStyle,
-                    conversationContext = recentTurnsContext
+                    conversationContext = recentTurnsContext,
+                    personalApiKey = activePersonalKeyForTranslation()
                 )
                 repository.saveVoiceTranslation(chosenTarget, result)
                 _voiceUiState.value = VoiceUiState.Idle
@@ -1110,7 +1149,13 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 } else {
                     val cloudAttempt = runCatching {
-                        translator.translateTextDirectly(clean, chosenSource, chosenTarget, chosenStyle)
+                        translator.translateTextDirectly(
+                            inputText = clean,
+                            sourceLanguage = chosenSource,
+                            targetLanguage = chosenTarget,
+                            translationStyle = chosenStyle,
+                            personalApiKey = activePersonalKeyForTranslation()
+                        )
                     }
                     if (cloudAttempt.isSuccess) {
                         repository.saveVoiceTranslation(chosenTarget, cloudAttempt.getOrThrow())
@@ -1208,6 +1253,15 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // --- Study Studio Actions ---
+    private fun activePersonalKeyForTranslation(): String {
+        val cfg = studyAiPreferences.currentConfig()
+        return if (cfg.isUsingPersonalKey || (cfg.hasPersonalKey && isAppCheckRateLimited())) {
+            cfg.personalApiKey
+        } else {
+            ""
+        }
+    }
+
     fun savePersonalGeminiKey(apiKey: String) {
         val clean = apiKey.trim()
         if (clean.isEmpty()) return
@@ -1216,10 +1270,39 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         _studyErrorRequiresSettings.value = false
         _studyVisualError.value = null
         _studyNotice.value = "تم حفظ وتفعيل مفتاح Gemini الشخصي على جهازك."
+        verifyPersonalGeminiKey(clean)
+    }
+
+    fun verifyPersonalGeminiKey(apiKey: String) {
+        val clean = apiKey.trim()
+        if (clean.isEmpty()) return
+        if (_personalKeyVerifyState.value.isVerifying) return
+        viewModelScope.launch {
+            _personalKeyVerifyState.value = PersonalKeyVerificationState(
+                isVerifying = true,
+                isSuccess = null,
+                message = "جاري فحص المفتاح مع خادم Google Gemini (نماذج 3.1 Pro / 3 Flash)…"
+            )
+            val result = studyAssistant.verifyPersonalKey(clean)
+            result.onSuccess { msg ->
+                _personalKeyVerifyState.value = PersonalKeyVerificationState(
+                    isVerifying = false,
+                    isSuccess = true,
+                    message = msg
+                )
+            }.onFailure { err ->
+                _personalKeyVerifyState.value = PersonalKeyVerificationState(
+                    isVerifying = false,
+                    isSuccess = false,
+                    message = err.localizedMessage ?: "تعذر التحقق من المفتاح الشخصي."
+                )
+            }
+        }
     }
 
     fun clearPersonalGeminiKey() {
         studyAiPreferences.clearPersonalApiKey()
+        _personalKeyVerifyState.value = PersonalKeyVerificationState()
         _studyNotice.value = "تم مسح المفتاح الشخصي والعودة للمسار السحابي الافتراضي."
     }
 
@@ -1824,7 +1907,8 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                             cues = cues,
                             sourceLanguageName = project.sourceLanguageName,
                             newTargetLanguage = newLanguage,
-                            translationStyle = chosenStyle
+                            translationStyle = chosenStyle,
+                            personalApiKey = activePersonalKeyForTranslation()
                         )
                     }.onSuccess { (cloudSummary, map) ->
                         summary = cloudSummary
@@ -1880,7 +1964,8 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     cues = cues,
                     sourceLanguageName = project.sourceLanguageName,
                     targetLanguage = targetOption,
-                    translationStyle = chosenStyle
+                    translationStyle = chosenStyle,
+                    personalApiKey = activePersonalKeyForTranslation()
                 )
                 repository.applyReTranslation(
                     projectId = projectId,

@@ -68,29 +68,35 @@ enum class StudyAiTier(
     val firebaseModel: String,
     val firebaseFallbackModel: String,
     val personalRestModel: String,
+    val personalRestFallbackModels: List<String>,
     val arabicLabel: String,
     val description: String
 ) {
-    BALANCED(
-        key = "BALANCED",
-        firebaseModel = "gemini-3.8-flash",
-        firebaseFallbackModel = "gemini-3.5-flash-lite",
-        personalRestModel = "gemini-2.5-flash",
-        arabicLabel = "سريع وذكي (Flash)",
-        description = "توازن ممتاز وسرعة فورية لأغلب المواد والملفات"
-    ),
     DEEP_REASONING(
         key = "DEEP_REASONING",
         firebaseModel = "gemini-4-argon",
         firebaseFallbackModel = "gemini-3.8-flash",
-        personalRestModel = "gemini-2.5-pro",
-        arabicLabel = "تحليل عميق (Argon / Pro)",
-        description = "استدلال علمي متقدم للرياضيات والفيزياء والكيمياء والمناهج الدسمة"
+        personalRestModel = "gemini-3.1-pro-preview",
+        personalRestFallbackModels = listOf("gemini-3-flash-preview"),
+        arabicLabel = "تحليل عميق (3.1 Pro / Argon)",
+        description = "أقوى نماذج Gemini الكاملة للاستدلال العلمي، حل المسائل المعقدة، وتصميم الشروحات والصور الاحترافية"
+    ),
+    BALANCED(
+        key = "BALANCED",
+        firebaseModel = "gemini-3.8-flash",
+        firebaseFallbackModel = "gemini-4-argon",
+        personalRestModel = "gemini-3-flash-preview",
+        personalRestFallbackModels = listOf("gemini-3.1-pro-preview"),
+        arabicLabel = "سريع وذكي (Gemini 3 Flash)",
+        description = "سرعة استجابة فورية مع ذكاء متكامل لفهم ملفات PDF والصور الطويلة والمحادثة"
     );
+
+    fun personalModelChain(): List<String> =
+        (listOf(personalRestModel) + personalRestFallbackModels).distinct()
 
     companion object {
         fun fromKey(key: String): StudyAiTier =
-            entries.firstOrNull { it.key.equals(key, ignoreCase = true) } ?: BALANCED
+            entries.firstOrNull { it.key.equals(key, ignoreCase = true) } ?: DEEP_REASONING
     }
 }
 
@@ -134,7 +140,7 @@ enum class StudyVisualStyle(
 data class StudyEngineConfig(
     val personalApiKey: String = "",
     val preferPersonalKey: Boolean = false,
-    val tier: StudyAiTier = StudyAiTier.BALANCED
+    val tier: StudyAiTier = StudyAiTier.DEEP_REASONING
 ) {
     val hasPersonalKey: Boolean get() = personalApiKey.isNotBlank()
     val isUsingPersonalKey: Boolean get() = hasPersonalKey && preferPersonalKey

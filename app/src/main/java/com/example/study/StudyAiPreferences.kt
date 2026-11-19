@@ -23,7 +23,7 @@ class StudyAiPreferences(context: Context) {
     private fun loadConfig(): StudyEngineConfig {
         val rawKey = prefs.getString(KEY_PERSONAL_API_KEY, "").orEmpty().trim()
         val preferPersonal = prefs.getBoolean(KEY_PREFER_PERSONAL, false)
-        val tierKey = prefs.getString(KEY_STUDY_AI_TIER, StudyAiTier.BALANCED.key).orEmpty()
+        val tierKey = prefs.getString(KEY_STUDY_AI_TIER, StudyAiTier.DEEP_REASONING.key).orEmpty()
         return StudyEngineConfig(
             personalApiKey = rawKey,
             preferPersonalKey = preferPersonal && rawKey.isNotBlank(),

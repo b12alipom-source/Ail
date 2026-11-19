@@ -15,6 +15,9 @@ import com.google.firebase.ai.type.GenerateContentResponse
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
+import com.example.study.PersonalGeminiRestClient
+import com.example.study.RestContentTurn
+import com.example.study.RestPart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
@@ -25,10 +28,12 @@ import java.io.IOException
 
 private const val TAG = "GeminiVideoTranslator"
 private const val PRIMARY_MODEL_NAME = "gemini-3.8-flash"
-private const val FALLBACK_MODEL_NAME = "gemini-3.5-flash-lite"
-private const val AI_TIMEOUT_MS = 60_000L
+private const val FALLBACK_MODEL_NAME = "gemini-4-argon"
+private const val AI_TIMEOUT_MS = 75_000L
 
-class GeminiVideoTranslator {
+class GeminiVideoTranslator(
+    private val restClient: PersonalGeminiRestClient = PersonalGeminiRestClient()
+) {
 
     private val translationSchema = Schema.obj(
         properties = mapOf(
@@ -194,7 +199,8 @@ class GeminiVideoTranslator {
         targetLanguage: LanguageOption,
         translationStyle: TranslationStyle = TranslationStyle.BALANCED,
         previousContext: String = "",
-        allowEmptySegments: Boolean = false
+        allowEmptySegments: Boolean = false,
+        personalApiKey: String = ""
     ): VideoTranslationResult {
         val sourceHint = if (sourceLanguage.code == SupportedLanguages.autoDetect.code) {
             "Auto-detect the primary spoken language accurately."
@@ -235,19 +241,38 @@ class GeminiVideoTranslator {
         """.trimIndent()
 
         try {
-            val response = generateWithFallback(
-                primaryModel = transcriptionModel,
-                fallbackModel = transcriptionFallbackModel
-            ) { model ->
-                model.generateContent(
-                    content {
-                        inlineData(mediaBytes, mimeType)
-                        text(prompt)
-                    }
+            val rawJson = if (personalApiKey.isNotBlank()) {
+                val restPrompt = "$prompt\n\nReturn valid JSON only with fields: detectedLanguageCode, detectedLanguageNameArabic, summary, segments[{startSec, endSec, originalText, translatedText}]."
+                val (jsonText, _) = restClient.generateStructuredJson(
+                    apiKey = personalApiKey,
+                    modelCandidates = listOf("gemini-3-flash-preview", "gemini-3.1-pro-preview"),
+                    turns = listOf(
+                        RestContentTurn(
+                            role = "user",
+                            parts = listOf(
+                                RestPart.InlineData(mimeType, mediaBytes),
+                                RestPart.Text(restPrompt)
+                            )
+                        )
+                    ),
+                    thinkingLevel = "low"
                 )
+                jsonText
+            } else {
+                val response = generateWithFallback(
+                    primaryModel = transcriptionModel,
+                    fallbackModel = transcriptionFallbackModel
+                ) { model ->
+                    model.generateContent(
+                        content {
+                            inlineData(mediaBytes, mimeType)
+                            text(prompt)
+                        }
+                    )
+                }
+                response.text
+                    ?: throw IllegalStateException("لم يُرجع نموذج الذكاء الاصطناعي أي بيانات.")
             }
-            val rawJson = response.text
-                ?: throw IllegalStateException("لم يُرجع نموذج الذكاء الاصطناعي أي بيانات.")
             return parseTranslationJson(rawJson, chunkDurationMs, startOffsetMs, allowEmptySegments)
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Transcription timed out", e)
@@ -255,7 +280,7 @@ class GeminiVideoTranslator {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Firebase AI transcription failed", e)
+            Log.e(TAG, "AI video transcription failed", e)
             throw IllegalStateException(
                 formatUserFacingError(e, "تعذرت معالجة الصوت والترجمة عبر الذكاء الاصطناعي.")
             )
@@ -268,7 +293,8 @@ class GeminiVideoTranslator {
         sourceLanguage: LanguageOption,
         targetLanguage: LanguageOption,
         translationStyle: TranslationStyle = TranslationStyle.BALANCED,
-        conversationContext: String = ""
+        conversationContext: String = "",
+        personalApiKey: String = ""
     ): VoiceTranslationResult {
         val sourceHint = if (sourceLanguage.code == SupportedLanguages.autoDetect.code) {
             "Auto-detect the spoken language."
@@ -293,19 +319,37 @@ class GeminiVideoTranslator {
         """.trimIndent()
 
         try {
-            val response = generateWithFallback(
-                primaryModel = voiceModel,
-                fallbackModel = voiceFallbackModel
-            ) { model ->
-                model.generateContent(
-                    content {
-                        inlineData(audioBytes, mimeType)
-                        text(prompt)
-                    }
+            val rawJson = if (personalApiKey.isNotBlank()) {
+                val (jsonText, _) = restClient.generateStructuredJson(
+                    apiKey = personalApiKey,
+                    modelCandidates = listOf("gemini-3-flash-preview", "gemini-3.1-pro-preview"),
+                    turns = listOf(
+                        RestContentTurn(
+                            role = "user",
+                            parts = listOf(
+                                RestPart.InlineData(mimeType, audioBytes),
+                                RestPart.Text("$prompt\nReturn valid JSON only with fields: detectedLanguageCode, detectedLanguageNameArabic, originalText, translatedText.")
+                            )
+                        )
+                    ),
+                    thinkingLevel = "low"
                 )
+                jsonText
+            } else {
+                val response = generateWithFallback(
+                    primaryModel = voiceModel,
+                    fallbackModel = voiceFallbackModel
+                ) { model ->
+                    model.generateContent(
+                        content {
+                            inlineData(audioBytes, mimeType)
+                            text(prompt)
+                        }
+                    )
+                }
+                response.text
+                    ?: throw IllegalStateException("لم يتم استلام استجابة من المترجم الصوتي.")
             }
-            val rawJson = response.text
-                ?: throw IllegalStateException("لم يتم استلام استجابة من المترجم الصوتي.")
             val json = JSONObject(rawJson)
             val detectedCode = json.optString("detectedLanguageCode", sourceLanguage.code)
                 .ifBlank { "auto" }
@@ -341,7 +385,8 @@ class GeminiVideoTranslator {
         cues: List<SubtitleCueEntity>,
         sourceLanguageName: String,
         newTargetLanguage: LanguageOption,
-        translationStyle: TranslationStyle = TranslationStyle.BALANCED
+        translationStyle: TranslationStyle = TranslationStyle.BALANCED,
+        personalApiKey: String = ""
     ): Pair<String, Map<Long, String>> {
         val payloadArray = JSONArray()
         cues.forEach { cue ->
@@ -363,14 +408,15 @@ class GeminiVideoTranslator {
             $payloadArray
         """.trimIndent()
 
-        return runBatchTranslationPrompt(prompt, cues)
+        return runBatchTranslationPrompt(prompt, cues, personalApiKey)
     }
 
     suspend fun polishCuesWithContext(
         cues: List<SubtitleCueEntity>,
         sourceLanguageName: String,
         targetLanguage: LanguageOption,
-        translationStyle: TranslationStyle
+        translationStyle: TranslationStyle,
+        personalApiKey: String = ""
     ): Pair<String, Map<Long, String>> {
         val payloadArray = JSONArray()
         cues.forEach { cue ->
@@ -395,14 +441,15 @@ class GeminiVideoTranslator {
             $payloadArray
         """.trimIndent()
 
-        return runBatchTranslationPrompt(prompt, cues)
+        return runBatchTranslationPrompt(prompt, cues, personalApiKey)
     }
 
     suspend fun translateTextDirectly(
         inputText: String,
         sourceLanguage: LanguageOption,
         targetLanguage: LanguageOption,
-        translationStyle: TranslationStyle = TranslationStyle.BALANCED
+        translationStyle: TranslationStyle = TranslationStyle.BALANCED,
+        personalApiKey: String = ""
     ): VoiceTranslationResult {
         val sourceHint = if (sourceLanguage.code == SupportedLanguages.autoDetect.code) {
             "Auto-detect the language of the input text."
@@ -422,14 +469,29 @@ class GeminiVideoTranslator {
         """.trimIndent()
 
         try {
-            val response = generateWithFallback(
-                primaryModel = textModel,
-                fallbackModel = textFallbackModel
-            ) { model ->
-                model.generateContent(prompt)
+            val rawJson = if (personalApiKey.isNotBlank()) {
+                val (jsonText, _) = restClient.generateStructuredJson(
+                    apiKey = personalApiKey,
+                    modelCandidates = listOf("gemini-3-flash-preview", "gemini-3.1-pro-preview"),
+                    turns = listOf(
+                        RestContentTurn(
+                            role = "user",
+                            parts = listOf(RestPart.Text("$prompt\nReturn valid JSON only with fields: detectedLanguageCode, detectedLanguageNameArabic, translatedText."))
+                        )
+                    ),
+                    thinkingLevel = "low"
+                )
+                jsonText
+            } else {
+                val response = generateWithFallback(
+                    primaryModel = textModel,
+                    fallbackModel = textFallbackModel
+                ) { model ->
+                    model.generateContent(prompt)
+                }
+                response.text
+                    ?: throw IllegalStateException("لم يُرجع نموذج الذكاء الاصطناعي نصاً مترجماً.")
             }
-            val rawJson = response.text
-                ?: throw IllegalStateException("لم يُرجع نموذج الذكاء الاصطناعي نصاً مترجماً.")
             val json = JSONObject(rawJson)
             val detectedCode = json.optString("detectedLanguageCode", sourceLanguage.code).ifBlank { "en" }
             val detectedAr = json.optString("detectedLanguageNameArabic", "")
@@ -457,17 +519,33 @@ class GeminiVideoTranslator {
 
     private suspend fun runBatchTranslationPrompt(
         prompt: String,
-        cues: List<SubtitleCueEntity>
+        cues: List<SubtitleCueEntity>,
+        personalApiKey: String = ""
     ): Pair<String, Map<Long, String>> {
         try {
-            val response = generateWithFallback(
-                primaryModel = retranslationModel,
-                fallbackModel = retranslationFallbackModel
-            ) { model ->
-                model.generateContent(prompt)
+            val rawJson = if (personalApiKey.isNotBlank()) {
+                val (jsonText, _) = restClient.generateStructuredJson(
+                    apiKey = personalApiKey,
+                    modelCandidates = listOf("gemini-3.1-pro-preview", "gemini-3-flash-preview"),
+                    turns = listOf(
+                        RestContentTurn(
+                            role = "user",
+                            parts = listOf(RestPart.Text("$prompt\nReturn valid JSON only with fields: summary, translations[{orderIndex, translatedText}]."))
+                        )
+                    ),
+                    thinkingLevel = "low"
+                )
+                jsonText
+            } else {
+                val response = generateWithFallback(
+                    primaryModel = retranslationModel,
+                    fallbackModel = retranslationFallbackModel
+                ) { model ->
+                    model.generateContent(prompt)
+                }
+                response.text
+                    ?: throw IllegalStateException("لم يُرجع النموذج ترجمة محدثة.")
             }
-            val rawJson = response.text
-                ?: throw IllegalStateException("لم يُرجع النموذج ترجمة محدثة.")
             val json = JSONObject(rawJson)
             val summary = json.optString("summary", "")
             val translationsArray = json.getJSONArray("translations")

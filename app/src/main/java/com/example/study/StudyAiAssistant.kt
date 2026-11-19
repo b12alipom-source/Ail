@@ -1,6 +1,10 @@
 package com.example.study
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.pdf.PdfRenderer
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.example.ai.AppCheckTokenOutcome
 import com.example.ai.isAppCheckRateLimited
@@ -35,11 +39,14 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.ByteArrayOutputStream
+import java.io.File
+import kotlin.math.min
 
 private const val TAG = "StudyAiAssistant"
-private const val MAX_INLINE_FILE_BYTES = 10 * 1024 * 1024 // 10 MB per inline attachment
-private const val TOTAL_INLINE_BUDGET_BYTES = 16 * 1024 * 1024
-private const val AI_TIMEOUT_MS = 60_000L
+private const val MAX_INLINE_FILE_BYTES = 15 * 1024 * 1024 // 15 MB per inline attachment
+private const val TOTAL_INLINE_BUDGET_BYTES = 18 * 1024 * 1024 // Safely under 20 MB Gemini limit
+private const val AI_TIMEOUT_MS = 120_000L
 
 class StudyAiException(
     override val message: String,
@@ -108,7 +115,7 @@ class StudyAiAssistant(
                         "example" to Schema.string(description = "Concrete solved example or real-world illustration in Arabic")
                     )
                 ),
-                description = "3 to 7 deep, structured Arabic study sections covering all attached content thoroughly"
+                description = "4 to 8 deep, structured Arabic study sections covering all attached content thoroughly"
             ),
             "glossary" to Schema.array(
                 items = Schema.obj(
@@ -117,15 +124,15 @@ class StudyAiAssistant(
                         "definition" to Schema.string(description = "Concise, accurate Arabic definition")
                     )
                 ),
-                description = "4 to 10 essential terminology flashcards"
+                description = "5 to 12 essential terminology flashcards"
             ),
             "examTips" to Schema.array(
                 items = Schema.string(description = "High-yield exam warning, common student mistake, or memory trick in Arabic"),
-                description = "3 to 6 practical exam tips"
+                description = "4 to 7 practical exam tips"
             ),
             "keyPoints" to Schema.array(
                 items = Schema.string(description = "High-yield bullet takeaway in Arabic"),
-                description = "5 to 10 essential revision bullet points"
+                description = "6 to 12 essential revision bullet points"
             ),
             "mindMapRootTitle" to Schema.string(
                 description = "Short central Arabic topic title for the mind map root"
@@ -141,7 +148,7 @@ class StudyAiAssistant(
                         )
                     )
                 ),
-                description = "3 to 6 structured mind map branches showing how topics connect"
+                description = "4 to 6 structured mind map branches showing how topics connect"
             ),
             "schedule" to Schema.array(
                 items = Schema.obj(
@@ -159,23 +166,12 @@ class StudyAiAssistant(
         )
     )
 
-    // Lazy Firebase AI Logic model instances
+    // Lazy Firebase AI Logic flagship models (no -lite models)
     private val flashDossierModel: GenerativeModel by lazy {
         Firebase.ai.generativeModel(
             modelName = StudyAiTier.BALANCED.firebaseModel,
             generationConfig = generationConfig {
-                temperature = 0.3f
-                responseMimeType = "application/json"
-                responseSchema = studyPlanSchema
-            }
-        )
-    }
-
-    private val flashLiteDossierModel: GenerativeModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = StudyAiTier.BALANCED.firebaseFallbackModel,
-            generationConfig = generationConfig {
-                temperature = 0.3f
+                temperature = 0.25f
                 responseMimeType = "application/json"
                 responseSchema = studyPlanSchema
             }
@@ -186,7 +182,7 @@ class StudyAiAssistant(
         Firebase.ai.generativeModel(
             modelName = StudyAiTier.DEEP_REASONING.firebaseModel,
             generationConfig = generationConfig {
-                temperature = 0.25f
+                temperature = 0.2f
                 responseMimeType = "application/json"
                 responseSchema = studyPlanSchema
             }
@@ -196,21 +192,23 @@ class StudyAiAssistant(
     private val flashChatModel: GenerativeModel by lazy {
         Firebase.ai.generativeModel(
             modelName = StudyAiTier.BALANCED.firebaseModel,
-            generationConfig = generationConfig { temperature = 0.4f }
-        )
-    }
-
-    private val flashLiteChatModel: GenerativeModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = StudyAiTier.BALANCED.firebaseFallbackModel,
-            generationConfig = generationConfig { temperature = 0.4f }
+            generationConfig = generationConfig { temperature = 0.35f }
         )
     }
 
     private val argonChatModel: GenerativeModel by lazy {
         Firebase.ai.generativeModel(
             modelName = StudyAiTier.DEEP_REASONING.firebaseModel,
-            generationConfig = generationConfig { temperature = 0.35f }
+            generationConfig = generationConfig { temperature = 0.3f }
+        )
+    }
+
+    private val proVisualModel: GenerativeModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3-pro-image",
+            generationConfig = generationConfig {
+                responseModalities = listOf(ResponseModality.IMAGE)
+            }
         )
     }
 
@@ -223,14 +221,8 @@ class StudyAiAssistant(
         )
     }
 
-    private val proVisualModel: GenerativeModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3-pro-image",
-            generationConfig = generationConfig {
-                responseModalities = listOf(ResponseModality.IMAGE)
-            }
-        )
-    }
+    suspend fun verifyPersonalKey(apiKey: String): Result<String> =
+        restClient.verifyApiKey(apiKey)
 
     suspend fun generateStudyPlan(
         config: StudyEngineConfig,
@@ -251,51 +243,42 @@ class StudyAiAssistant(
         return try {
             withTimeout(AI_TIMEOUT_MS) {
                 if (config.isUsingPersonalKey) {
-                    val turns = listOf(
-                        RestContentTurn(
-                            role = "user",
-                            parts = buildRestParts(
-                                instructionPrompt = prompt + "\nأعد الرد JSON فقط وفق الحقول: overview, sections[{heading,explanation,keyFormulaOrRule,example}], glossary[{term,definition}], examTips[], keyPoints[], mindMapRootTitle, mindMapBranches[{title,colorTag,subtopics[]}], schedule[{dayNumber,dayLabel,timeSlot,taskTitle,taskDetail,durationMinutes}].",
-                                attachments = attachments
-                            )
-                        )
-                    )
-                    val raw = restClient.generateStructuredJson(
-                        apiKey = config.personalApiKey,
-                        modelName = config.tier.personalRestModel,
-                        turns = turns
-                    )
-                    parseStudyPlanJson(
-                        rawJson = raw,
-                        fallbackDailyMinutes = dailyMinutes,
-                        fallbackTotalDays = totalDays,
-                        engineLabel = "مفتاح شخصي • ${config.tier.personalRestModel}"
-                    )
+                    runPersonalStudyPlan(config, prompt, attachments, dailyMinutes, totalDays)
                 } else {
-                    ensureFirebaseAppCheckReady()
-                    val inputContent = buildFirebaseMultimodalContent(prompt, attachments)
-                    val models = when (config.tier) {
-                        StudyAiTier.DEEP_REASONING -> listOf(
-                            StudyAiTier.DEEP_REASONING.firebaseModel to argonDossierModel,
-                            StudyAiTier.DEEP_REASONING.firebaseFallbackModel to flashDossierModel
+                    try {
+                        ensureFirebaseAppCheckReady()
+                        val inputContent = buildFirebaseMultimodalContent(prompt, attachments)
+                        val models = when (config.tier) {
+                            StudyAiTier.DEEP_REASONING -> listOf(
+                                StudyAiTier.DEEP_REASONING.firebaseModel to argonDossierModel,
+                                StudyAiTier.DEEP_REASONING.firebaseFallbackModel to flashDossierModel
+                            )
+                            StudyAiTier.BALANCED -> listOf(
+                                StudyAiTier.BALANCED.firebaseModel to flashDossierModel,
+                                StudyAiTier.DEEP_REASONING.firebaseModel to argonDossierModel
+                            )
+                        }
+                        val (raw, usedModel) = executeFirebaseUnaryWithFallback(models, inputContent)
+                        parseStudyPlanJson(
+                            rawJson = raw,
+                            fallbackDailyMinutes = dailyMinutes,
+                            fallbackTotalDays = totalDays,
+                            engineLabel = "سحابي • $usedModel"
                         )
-                        StudyAiTier.BALANCED -> listOf(
-                            StudyAiTier.BALANCED.firebaseModel to flashDossierModel,
-                            StudyAiTier.BALANCED.firebaseFallbackModel to flashLiteDossierModel
-                        )
+                    } catch (e: StudyAiException) {
+                        // If Firebase App Check fails on a sideloaded APK but the user already has a key saved, retry automatically
+                        if (e.isAppCheckOrAuthError && config.hasPersonalKey) {
+                            Log.i(TAG, "Firebase App Check unavailable; automatically using saved Personal Gemini Key.")
+                            runPersonalStudyPlan(config, prompt, attachments, dailyMinutes, totalDays)
+                        } else {
+                            throw e
+                        }
                     }
-                    val (raw, usedModel) = executeFirebaseUnaryWithFallback(models, inputContent)
-                    parseStudyPlanJson(
-                        rawJson = raw,
-                        fallbackDailyMinutes = dailyMinutes,
-                        fallbackTotalDays = totalDays,
-                        engineLabel = "سحابي • $usedModel"
-                    )
                 }
             }
         } catch (e: CancellationException) {
             if (e is TimeoutCancellationException) {
-                throw StudyAiException("انتهت مهلة التحليل السحابي (60 ثانية). جرّب تقليل المرفقات أو إعادة المحاولة.", cause = e)
+                throw StudyAiException("انتهت مهلة التحليل العميق (120 ثانية). جرّب تقليل حجم المرفقات أو التحويل لخيار Flash السريع.", cause = e)
             }
             throw e
         } catch (e: StudyAiException) {
@@ -304,6 +287,62 @@ class StudyAiAssistant(
             Log.e(TAG, "Study dossier generation failed", e)
             throw classifyAiException(e, config.isUsingPersonalKey)
         }
+    }
+
+    private suspend fun runPersonalStudyPlan(
+        config: StudyEngineConfig,
+        prompt: String,
+        attachments: List<StudyAttachmentEntity>,
+        dailyMinutes: Int,
+        totalDays: Int
+    ): GeneratedStudyPlanResult {
+        val jsonSchemaInstruction = """
+            $prompt
+
+            أعد الرد بصيغة JSON صالحة ومباشرة فقط (بدون أي كلام قبلها أو بعدها وبدون markdown) وتحتوي بدقة على الحقول التالية:
+            {
+              "overview": "نظرة عامة أكاديمية شاملة للمادة من 4-6 جمل بالعربية",
+              "sections": [
+                {
+                  "heading": "عنوان المحور",
+                  "explanation": "شرح تفصيلي وعميق سهل الفهم يغطي جميع المفاهيم والآليات والرسوم في المرفقات",
+                  "keyFormulaOrRule": "القانون أو القاعدة العلمية أو المعادلة الجوهرية (أو نص فارغ إن لم يوجد)",
+                  "example": "مثال تطبيقي محلول خطوة بخطوة أو حالة عملية من المادة"
+                }
+              ],
+              "glossary": [{"term": "المصطلح العربي (والأجنبي)", "definition": "التعريف الدقيق"}],
+              "examTips": ["تنبيه أو سر امتحاني مهم"],
+              "keyPoints": ["نقطة مراجعة مركّزة"],
+              "mindMapRootTitle": "العنوان المركزي للخريطة الذهنية",
+              "mindMapBranches": [{"title": "الفرع الرئيسي", "colorTag": "sapphire|emerald|amber|violet", "subtopics": ["فكرة فرعية 1", "فكرة فرعية 2"]}],
+              "schedule": [{"dayNumber": 1, "dayLabel": "اليوم 1", "timeSlot": "الجلسة الصباحية", "taskTitle": "عنوان المهمة", "taskDetail": "تفاصيل المذاكرة المحددة", "durationMinutes": 30}]
+            }
+        """.trimIndent()
+
+        val turns = listOf(
+            RestContentTurn(
+                role = "user",
+                parts = buildRestParts(
+                    instructionPrompt = jsonSchemaInstruction,
+                    attachments = attachments
+                )
+            )
+        )
+        val thinking = if (config.tier == StudyAiTier.DEEP_REASONING) "medium" else "low"
+        val (raw, usedModel) = restClient.generateStructuredJson(
+            apiKey = config.personalApiKey,
+            modelCandidates = config.tier.personalModelChain(),
+            turns = turns,
+            systemInstruction = "أنت بروفيسور أكاديمي عربي ومصمم مناهج خبير في تطبيق بيان. مهمتك إنتاج تحليل علمي شامل وعميق بدون اختصار مخل.",
+            thinkingLevel = thinking,
+            maxOutputTokens = 16384
+        )
+        return parseStudyPlanJson(
+            rawJson = raw,
+            fallbackDailyMinutes = dailyMinutes,
+            fallbackTotalDays = totalDays,
+            engineLabel = "مفتاح شخصي • $usedModel"
+        )
     }
 
     suspend fun generateStudyVisual(
@@ -321,80 +360,76 @@ class StudyAiAssistant(
             fallbackSummary = fallbackSummary,
             attachments = attachments
         )
+        val preferPro = config.tier == StudyAiTier.DEEP_REASONING
 
         return try {
             withTimeout(AI_TIMEOUT_MS) {
                 if (config.isUsingPersonalKey) {
-                    val parts = buildList {
-                        add(RestPart.Text(visualPrompt))
-                        attachments.firstOrNull {
-                            StudyAttachmentType.fromKey(it.attachmentType) == StudyAttachmentType.IMAGE
-                        }?.let { imgAtt ->
-                            readFileBytesBounded(imgAtt.localFilePath, 4 * 1024 * 1024)?.let { bytes ->
-                                add(RestPart.InlineData(imgAtt.mimeType, bytes))
-                            }
-                        }
-                    }
-                    val (imgBytes, usedModel) = restClient.generateImagePngBytes(
-                        apiKey = config.personalApiKey,
-                        turns = listOf(RestContentTurn(role = "user", parts = parts))
-                    )
-                    GeneratedVisualResult(
-                        bitmap = null,
-                        rawBytes = imgBytes,
-                        title = "${style.arabicLabel} — $notebookTitle",
-                        promptSummary = visualPrompt.take(280),
-                        engineLabel = "مفتاح شخصي • $usedModel"
-                    )
+                    runPersonalVisual(config.personalApiKey, notebookTitle, style, visualPrompt, attachments, preferPro)
                 } else {
-                    ensureFirebaseAppCheckReady()
-                    val firstImageBytes = attachments.firstOrNull {
-                        StudyAttachmentType.fromKey(it.attachmentType) == StudyAttachmentType.IMAGE
-                    }?.let { readFileBytesBounded(it.localFilePath, 4 * 1024 * 1024) }
+                    try {
+                        ensureFirebaseAppCheckReady()
+                        val firstImageBytes = attachments.firstOrNull {
+                            StudyAttachmentType.fromKey(it.attachmentType) == StudyAttachmentType.IMAGE
+                        }?.let { readFileBytesBounded(it.localFilePath, 6 * 1024 * 1024) }
 
-                    val visualContent = content {
-                        text(visualPrompt)
-                        if (firstImageBytes != null) {
-                            inlineData(firstImageBytes, "image/jpeg")
-                        }
-                    }
-
-                    val candidates = listOf(
-                        "gemini-nano-banana-2.1" to nanoBananaVisualModel,
-                        "gemini-3-pro-image" to proVisualModel
-                    )
-                    var lastErr: Throwable? = null
-                    for ((name, model) in candidates) {
-                        try {
-                            val response = model.generateContent(visualContent)
-                            val imagePart = response.candidates.firstOrNull()
-                                ?.content?.parts?.filterIsInstance<ImagePart>()
-                                ?.firstOrNull()
-                            val bmp = imagePart?.image
-                            if (bmp != null) {
-                                return@withTimeout GeneratedVisualResult(
-                                    bitmap = bmp,
-                                    rawBytes = null,
-                                    title = "${style.arabicLabel} — $notebookTitle",
-                                    promptSummary = visualPrompt.take(280),
-                                    engineLabel = "سحابي • $name"
-                                )
+                        val visualContent = content {
+                            text(visualPrompt)
+                            if (firstImageBytes != null) {
+                                inlineData(firstImageBytes, "image/jpeg")
                             }
-                        } catch (e: CancellationException) {
+                        }
+
+                        val candidates = if (preferPro) {
+                            listOf(
+                                "gemini-3-pro-image" to proVisualModel,
+                                "gemini-nano-banana-2.1" to nanoBananaVisualModel
+                            )
+                        } else {
+                            listOf(
+                                "gemini-nano-banana-2.1" to nanoBananaVisualModel,
+                                "gemini-3-pro-image" to proVisualModel
+                            )
+                        }
+                        var lastErr: Throwable? = null
+                        for ((name, model) in candidates) {
+                            try {
+                                val response = model.generateContent(visualContent)
+                                val imagePart = response.candidates.firstOrNull()
+                                    ?.content?.parts?.filterIsInstance<ImagePart>()
+                                    ?.firstOrNull()
+                                val bmp = imagePart?.image
+                                if (bmp != null) {
+                                    return@withTimeout GeneratedVisualResult(
+                                        bitmap = bmp,
+                                        rawBytes = null,
+                                        title = "${style.arabicLabel} — $notebookTitle",
+                                        promptSummary = visualPrompt.take(280),
+                                        engineLabel = "سحابي • $name"
+                                    )
+                                }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Image generation attempt failed on $name", e)
+                                lastErr = e
+                                val classified = classifyAiException(e, isPersonalKey = false)
+                                if (classified.isAppCheckOrAuthError) throw classified
+                            }
+                        }
+                        throw (lastErr ?: IllegalStateException("لم يُرجع نموذج الصور أي صورة هذه المرة."))
+                    } catch (e: StudyAiException) {
+                        if (e.isAppCheckOrAuthError && config.hasPersonalKey) {
+                            runPersonalVisual(config.personalApiKey, notebookTitle, style, visualPrompt, attachments, preferPro)
+                        } else {
                             throw e
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Image generation attempt failed on $name", e)
-                            lastErr = e
-                            val classified = classifyAiException(e, isPersonalKey = false)
-                            if (classified.isAppCheckOrAuthError) throw classified
                         }
                     }
-                    throw (lastErr ?: IllegalStateException("لم يُرجع نموذج الصور أي صورة هذه المرة."))
                 }
             }
         } catch (e: CancellationException) {
             if (e is TimeoutCancellationException) {
-                throw StudyAiException("استغرق توليد الإنفوجرافيك أكثر من 60 ثانية. يرجى المحاولة مجدداً.", cause = e)
+                throw StudyAiException("استغرق توليد الإنفوجرافيك أكثر من 120 ثانية. يرجى المحاولة مجدداً.", cause = e)
             }
             throw e
         } catch (e: StudyAiException) {
@@ -403,6 +438,38 @@ class StudyAiAssistant(
             Log.e(TAG, "Visual study generation failed", e)
             throw classifyAiException(e, config.isUsingPersonalKey)
         }
+    }
+
+    private suspend fun runPersonalVisual(
+        apiKey: String,
+        notebookTitle: String,
+        style: StudyVisualStyle,
+        visualPrompt: String,
+        attachments: List<StudyAttachmentEntity>,
+        preferPro: Boolean
+    ): GeneratedVisualResult {
+        val parts = buildList {
+            add(RestPart.Text(visualPrompt))
+            attachments.firstOrNull {
+                StudyAttachmentType.fromKey(it.attachmentType) == StudyAttachmentType.IMAGE
+            }?.let { imgAtt ->
+                readFileBytesBounded(imgAtt.localFilePath, 6 * 1024 * 1024)?.let { bytes ->
+                    add(RestPart.InlineData(imgAtt.mimeType, bytes))
+                }
+            }
+        }
+        val (imgBytes, usedModel) = restClient.generateImagePngBytes(
+            apiKey = apiKey,
+            turns = listOf(RestContentTurn(role = "user", parts = parts)),
+            preferProModel = preferPro
+        )
+        return GeneratedVisualResult(
+            bitmap = null,
+            rawBytes = imgBytes,
+            title = "${style.arabicLabel} — $notebookTitle",
+            promptSummary = visualPrompt.take(280),
+            engineLabel = "مفتاح شخصي • $usedModel"
+        )
     }
 
     suspend fun streamStudyTutorReply(
@@ -429,73 +496,77 @@ class StudyAiAssistant(
             )
         }
 
-        val systemContext = buildTutorSystemContext(
+        val systemInstruction = buildTutorSystemInstruction(
             notebookTitle = notebookTitle,
             method = method,
             summary = summary,
-            dossierJson = dossierJson,
-            history = history,
-            userQuestion = userQuestion,
-            inlineAttachmentName = inlineAttachment?.displayName
+            dossierJson = dossierJson
         )
 
         return try {
             withTimeout(AI_TIMEOUT_MS) {
                 if (config.isUsingPersonalKey) {
-                    val turns = listOf(
-                        RestContentTurn(
-                            role = "user",
-                            parts = buildRestParts(
-                                instructionPrompt = systemContext,
-                                attachments = attachments,
-                                extraAttachment = inlineAttachment
-                            )
-                        )
-                    )
-                    val modelName = config.tier.personalRestModel
-                    val accumulated = StringBuilder()
-                    val full = restClient.streamText(
-                        apiKey = config.personalApiKey,
-                        modelName = modelName,
-                        turns = turns,
-                        onChunk = { delta ->
-                            accumulated.append(delta)
-                            onChunk(accumulated.toString())
-                        }
-                    )
-                    TutorStreamResult(
-                        fullText = full,
-                        engineLabel = "مفتاح شخصي • $modelName",
-                        isOffline = false
+                    runPersonalTutorStream(
+                        config = config,
+                        systemInstruction = systemInstruction,
+                        attachments = attachments,
+                        history = history,
+                        userQuestion = userQuestion,
+                        inlineAttachment = inlineAttachment,
+                        onChunk = onChunk
                     )
                 } else {
-                    ensureFirebaseAppCheckReady()
-                    val inputContent = buildFirebaseMultimodalContent(
-                        instructionPrompt = systemContext,
-                        attachments = attachments,
-                        extraAttachment = inlineAttachment
-                    )
-                    val models = when (config.tier) {
-                        StudyAiTier.DEEP_REASONING -> listOf(
-                            StudyAiTier.DEEP_REASONING.firebaseModel to argonChatModel,
-                            StudyAiTier.DEEP_REASONING.firebaseFallbackModel to flashChatModel
+                    try {
+                        ensureFirebaseAppCheckReady()
+                        val fullPrompt = buildString {
+                            appendLine(systemInstruction)
+                            appendHistoryBlock(history)
+                            if (inlineAttachment != null) {
+                                appendLine("\nأرفق الطالب الآن ملف/صورة جديدة مع هذا السؤال اسمها: ${inlineAttachment.displayName}")
+                            }
+                            appendLine("\nسؤال الطالب الحالي:\n$userQuestion")
+                        }
+                        val inputContent = buildFirebaseMultimodalContent(
+                            instructionPrompt = fullPrompt,
+                            attachments = attachments,
+                            extraAttachment = inlineAttachment
                         )
-                        StudyAiTier.BALANCED -> listOf(
-                            StudyAiTier.BALANCED.firebaseModel to flashChatModel,
-                            StudyAiTier.BALANCED.firebaseFallbackModel to flashLiteChatModel
+                        val models = when (config.tier) {
+                            StudyAiTier.DEEP_REASONING -> listOf(
+                                StudyAiTier.DEEP_REASONING.firebaseModel to argonChatModel,
+                                StudyAiTier.DEEP_REASONING.firebaseFallbackModel to flashChatModel
+                            )
+                            StudyAiTier.BALANCED -> listOf(
+                                StudyAiTier.BALANCED.firebaseModel to flashChatModel,
+                                StudyAiTier.DEEP_REASONING.firebaseModel to argonChatModel
+                            )
+                        }
+                        val (fullText, usedModel) = executeFirebaseStreamWithFallback(models, inputContent, onChunk)
+                        TutorStreamResult(
+                            fullText = fullText,
+                            engineLabel = "سحابي • $usedModel",
+                            isOffline = false
                         )
+                    } catch (e: StudyAiException) {
+                        if (e.isAppCheckOrAuthError && config.hasPersonalKey) {
+                            runPersonalTutorStream(
+                                config = config,
+                                systemInstruction = systemInstruction,
+                                attachments = attachments,
+                                history = history,
+                                userQuestion = userQuestion,
+                                inlineAttachment = inlineAttachment,
+                                onChunk = onChunk
+                            )
+                        } else {
+                            throw e
+                        }
                     }
-                    val (fullText, usedModel) = executeFirebaseStreamWithFallback(models, inputContent, onChunk)
-                    TutorStreamResult(
-                        fullText = fullText,
-                        engineLabel = "سحابي • $usedModel",
-                        isOffline = false
-                    )
                 }
             }
         } catch (e: CancellationException) {
             if (e is TimeoutCancellationException) {
-                throw StudyAiException("استغرق رد المعلم وقتاً أطول من 60 ثانية. حاول صياغة سؤال أقصر أو أعد المحاولة.", cause = e)
+                throw StudyAiException("استغرق رد المعلم وقتاً أطول من 120 ثانية. حاول صياغة سؤال أقصر أو أعد المحاولة.", cause = e)
             }
             throw e
         } catch (e: StudyAiException) {
@@ -504,6 +575,91 @@ class StudyAiAssistant(
             Log.e(TAG, "Tutor stream failed", e)
             throw classifyAiException(e, config.isUsingPersonalKey)
         }
+    }
+
+    private suspend fun runPersonalTutorStream(
+        config: StudyEngineConfig,
+        systemInstruction: String,
+        attachments: List<StudyAttachmentEntity>,
+        history: List<StudyMessageEntity>,
+        userQuestion: String,
+        inlineAttachment: IngestedAttachment?,
+        onChunk: suspend (String) -> Unit
+    ): TutorStreamResult {
+        val turns = buildList {
+            // 1. Seed attached course materials as initial user context turn if attachments exist
+            if (attachments.isNotEmpty()) {
+                add(
+                    RestContentTurn(
+                        role = "user",
+                        parts = buildRestParts(
+                            instructionPrompt = "هذه هي مرفقات ومصادر المادة الدراسية المعتمدة في نقاشنا:",
+                            attachments = attachments
+                        )
+                    )
+                )
+                add(
+                    RestContentTurn(
+                        role = "model",
+                        parts = listOf(RestPart.Text("تم استلام مرفقات المادة ودراستها بالكامل. تفضل بطرح سؤالك أو إرسال صورة المسألة."))
+                    )
+                )
+            }
+            // 2. Real multi-turn conversation history
+            history.takeLast(10).forEach { msg ->
+                val msgText = buildString {
+                    if (msg.attachmentName.isNotBlank()) {
+                        append("[أرفق: ${msg.attachmentName}] ")
+                    }
+                    append(msg.messageText)
+                }.trim()
+                if (msgText.isNotEmpty()) {
+                    add(
+                        RestContentTurn(
+                            role = if (msg.isUser) "user" else "model",
+                            parts = listOf(RestPart.Text(msgText))
+                        )
+                    )
+                }
+            }
+            // 3. Current question + optional inline image/PDF
+            val currentPrompt = buildString {
+                if (inlineAttachment != null) {
+                    appendLine("أرفق الطالب مع هذا السؤال: ${inlineAttachment.displayName}")
+                }
+                append(userQuestion)
+            }
+            add(
+                RestContentTurn(
+                    role = "user",
+                    parts = buildRestParts(
+                        instructionPrompt = currentPrompt,
+                        attachments = emptyList(),
+                        extraAttachment = inlineAttachment
+                    )
+                )
+            )
+        }
+
+        val accumulated = StringBuilder()
+        val thinking = if (config.tier == StudyAiTier.DEEP_REASONING) "medium" else "low"
+        val (full, usedModel) = restClient.streamText(
+            apiKey = config.personalApiKey,
+            modelCandidates = config.tier.personalModelChain(),
+            turns = turns,
+            systemInstruction = systemInstruction,
+            thinkingLevel = thinking,
+            maxOutputTokens = 8192,
+            onChunk = { delta ->
+                accumulated.append(delta)
+                onChunk(accumulated.toString())
+            }
+        )
+        return TutorStreamResult(
+            fullText = full,
+            engineLabel = "مفتاح شخصي • $usedModel",
+            isOffline = false
+        )
     }
 
     private suspend fun ensureFirebaseAppCheckReady() {
@@ -554,11 +710,13 @@ class StudyAiAssistant(
     ): Pair<String, String> {
         var lastErr: Throwable? = null
         for ((name, model) in models) {
+            var emitted = false
             try {
                 val sb = StringBuilder()
                 model.generateContentStream(inputContent).collect { chunk ->
                     val piece = chunk.text.orEmpty()
                     if (piece.isNotEmpty()) {
+                        emitted = true
                         sb.append(piece)
                         onChunk(sb.toString())
                     }
@@ -570,7 +728,7 @@ class StudyAiAssistant(
             } catch (e: Exception) {
                 lastErr = e
                 val classified = classifyAiException(e, isPersonalKey = false)
-                if (classified.isAppCheckOrAuthError) throw classified
+                if (emitted || classified.isAppCheckOrAuthError) throw classified
             }
         }
         throw lastErr ?: IllegalStateException("تعذر استلام بث الإجابة من المعلم الذكي.")
@@ -585,14 +743,14 @@ class StudyAiAssistant(
         appendLine("أنت معلم أكاديمي خبير ومصمم مناهج ذكية داخل تطبيق «بيان».")
         appendLine("المطلوب: إعداد ملف دراسة شامل وعميق للمادة «$notebookTitle» اعتماداً على كافة المرفقات المرسلة (ملفات PDF، صور، ملاحظات، نصوص فيديوهات).")
         appendLine("أسلوب الدراسة المطلوب: ${method.arabicLabel} — ${method.promptInstruction}")
-        appendLine("متطلبات الجودة:")
+        appendLine("متطلبات الجودة (استخدم كامل قدرتك العلمية بدون اختصار):")
         appendLine("1. نظرة عامة مركّزة ومفهومة (overview).")
-        appendLine("2. تقسيم المادة إلى محاور تفصيلية واضحة (sections) مع شرح وافٍ، وإبراز القانون أو القاعدة الجوهرية (keyFormulaOrRule) ومثال تطبيقي محلول (example).")
+        appendLine("2. تقسيم المادة إلى محاور تفصيلية متعمقة (sections) مع شرح وافٍ، وإبراز القانون أو القاعدة الجوهرية (keyFormulaOrRule) ومثال تطبيقي محلول خطوة بخطوة (example).")
         appendLine("3. قاموس لأهم المصطلحات العلمية (glossary) بالعربية ومعها المصطلح الأجنبي عند الحاجة.")
-        appendLine("4. تنبيهات وأسرار الامتحان والأخطاء الشائعة (examTips).")
-        appendLine("5. شجرة خريطة ذهنية هرمية (mindMapRootTitle + mindMapBranches) توضح ترابط المفاهيم بدقة.")
+        appendLine("4. تنبيهات وأسرار الامتحان والأخطاء الشائعة التي يقع فيها الطلاب (examTips).")
+        appendLine("5. شجرة خريطة ذهنية هرمية دقيقة (mindMapRootTitle + mindMapBranches) توضح ترابط المفاهيم بدقة.")
         appendLine("6. جدول دراسي عملي لـ $totalDays أيام بمعدل $dailyMinutes دقيقة يومياً مقسم إلى جلستين واضحتين لكل يوم.")
-        appendLine("اجعل الشرح بالعربية الفصحى السلسة، دسم الفائدة، بدون حشو عام، ومرتبطاً حرفياً بمحتوى المرفقات.")
+        appendLine("اجعل الشرح بالعربية الفصحى السلسة، غنياً بالمعلومات والأمثلة، ومرتبطاً حرفياً بمحتوى المرفقات.")
     }
 
     private fun buildVisualPosterPrompt(
@@ -604,55 +762,54 @@ class StudyAiAssistant(
     ): String {
         val coreSummary = buildString {
             if (dossier != null) {
-                if (dossier.overview.isNotBlank()) appendLine("Topic overview: ${dossier.overview.take(350)}")
+                if (dossier.overview.isNotBlank()) appendLine("Topic overview: ${dossier.overview.take(450)}")
                 if (dossier.sections.isNotEmpty()) {
                     appendLine("Key pillars:")
-                    dossier.sections.take(4).forEachIndexed { idx, s ->
-                        appendLine("${idx + 1}. ${s.heading}: ${s.keyFormulaOrRule.ifBlank { s.explanation.take(90) }}")
+                    dossier.sections.take(5).forEachIndexed { idx, s ->
+                        appendLine("${idx + 1}. ${s.heading}: ${s.keyFormulaOrRule.ifBlank { s.explanation.take(120) }}")
                     }
                 }
                 if (dossier.mindMapBranches.isNotEmpty()) {
-                    appendLine("Branches: " + dossier.mindMapBranches.take(4).joinToString("; ") { b ->
-                        "${b.title} (${b.subtopics.take(2).joinToString(", ")})"
+                    appendLine("Branches: " + dossier.mindMapBranches.take(5).joinToString("; ") { b ->
+                        "${b.title} (${b.subtopics.take(3).joinToString(", ")})"
                     })
                 }
             } else if (fallbackSummary.isNotBlank()) {
-                appendLine(fallbackSummary.take(600))
+                appendLine(fallbackSummary.take(700))
             } else {
                 appendLine("Attachments: " + attachments.joinToString(", ") { it.displayName })
             }
         }
 
         return buildString {
-            appendLine("Create a high-clarity educational study poster visual for subject: \"$notebookTitle\".")
+            appendLine("Create a high-resolution, publication-grade educational study poster infographic for subject: \"$notebookTitle\".")
             appendLine("Visual Format Style: ${style.arabicLabel} (${style.artDirection})")
-            appendLine("Concept content to visualize clearly:")
+            appendLine("Key concepts and educational structure to illustrate:")
             appendLine(coreSummary.trim())
-            appendLine("Visual design rules: Organize into crisp visual zones, clear icons, diagrams, arrows, and minimal high-contrast title/keyword badges. Avoid tiny unreadable paragraphs. Modern scholarly infographic look.")
+            appendLine("Design rules: Clean scholarly layout with distinct visual cards, clear scientific illustrations/icons, directional flow arrows, key formulas, and crisp readable labels (Arabic / scientific symbols where clear). High visual hierarchy, zero clutter.")
         }
     }
 
-    private fun buildTutorSystemContext(
+    private fun buildTutorSystemInstruction(
         notebookTitle: String,
         method: StudyMethod,
         summary: String,
-        dossierJson: String,
-        history: List<StudyMessageEntity>,
-        userQuestion: String,
-        inlineAttachmentName: String?
+        dossierJson: String
     ): String = buildString {
-        appendLine("أنت «معلم بيان الذكي» المتخصص في شرح ومناقشة مادة «$notebookTitle».")
+        appendLine("أنت «معلم بيان الذكي» — أستاذ أكاديمي متمكن ومتعمق في شرح ومناقشة مادة «$notebookTitle».")
         appendLine("أسلوب الطالب المفضل: ${method.arabicLabel} (${method.promptInstruction}).")
-        appendLine("قواعد الإجابة:")
-        appendLine("- قدّم شرحاً عميقاً وواضحاً ومنسقاً بعناوين فرعية ونقاط مرتبة.")
-        appendLine("- إذا أرفق الطالب صورة مسألة أو صفحة كتاب مع رسالته، اقرأها بدقة، واستخرج المعطيات، واشرح الحل خطوة بخطوة بوضوح تام.")
-        appendLine("- اربط إجابتك بمرفقات المادة عند وجودها، واختم بتحقق فهم أو مثال إضافي إذا ناسب السياق.")
+        appendLine("قواعد الإجابة الصارمة:")
+        appendLine("- قدّم إجابات علمية دقيقة ومتعمقة ومنسقة بعناوين واضحة وخطوات مرتبة — لا تقتصر على إجابات سطحية.")
+        appendLine("- إذا أرفق الطالب صورة مسألة أو صفحة كتاب أو ملف PDF، اقرأ كل تفاصيله بدقة، واستخرج المعطيات، واشرح الحل خطوة بخطوة بوضوح تام.")
+        appendLine("- اربط إجابتك بمرفقات المادة، واختم بتحقق سريع للفهم أو مثال تطبيقي إضافي عند الحاجة.")
 
-        val digest = dossierJson.ifBlank { summary }.take(3500)
+        val digest = dossierJson.ifBlank { summary }.take(4500)
         if (digest.isNotBlank()) {
-            appendLine("\nملخص المادة الحالي:")
-            appendLine(digest)
+            appendLine("\nمرجع ملخص المادة الحالي:\n$digest")
         }
+    }
+
+    private fun StringBuilder.appendHistoryBlock(history: List<StudyMessageEntity>) {
         val recentHistory = history.takeLast(8)
         if (recentHistory.isNotEmpty()) {
             appendLine("\nسياق المحادثة السابقة:")
@@ -662,10 +819,6 @@ class StudyAiAssistant(
                 appendLine("$role$attHint: ${msg.messageText}")
             }
         }
-        if (!inlineAttachmentName.isNullOrBlank()) {
-            appendLine("\nأرفق الطالب الآن ملف/صورة جديدة مع هذا السؤال اسمها: $inlineAttachmentName")
-        }
-        appendLine("\nسؤال الطالب الحالي:\n$userQuestion")
     }
 
     private fun buildFirebaseMultimodalContent(
@@ -685,8 +838,22 @@ class StudyAiAssistant(
                 attachedBytesBudget += extraBytes.size
                 text("\n--- مرفق السؤال المباشر (${extraAttachment.type.arabicLabel}): ${extraAttachment.displayName} ---")
                 inlineData(extraBytes, extraAttachment.mimeType)
-            } else if (extraAttachment.extractedText.isNotBlank()) {
-                text("\n--- نص مرفق السؤال: ${extraAttachment.displayName} ---\n${extraAttachment.extractedText.take(10_000)}")
+            } else {
+                if (extraAttachment.type == StudyAttachmentType.PDF) {
+                    val pageImages = renderPdfFallbackImages(extraAttachment.localFilePath, maxPages = 6)
+                    if (pageImages.isNotEmpty()) {
+                        text("\n--- صفحات مصورة من PDF (${extraAttachment.displayName}) ---")
+                        pageImages.forEach { imgBytes ->
+                            if (attachedBytesBudget + imgBytes.size <= TOTAL_INLINE_BUDGET_BYTES) {
+                                attachedBytesBudget += imgBytes.size
+                                inlineData(imgBytes, "image/jpeg")
+                            }
+                        }
+                    }
+                }
+                if (extraAttachment.extractedText.isNotBlank()) {
+                    text("\n--- نص مرفق السؤال: ${extraAttachment.displayName} ---\n${extraAttachment.extractedText.take(12_000)}")
+                }
             }
         }
 
@@ -702,8 +869,22 @@ class StudyAiAssistant(
                 attachedBytesBudget += fileBytes.size
                 text("\n--- مرفق المادة (${type.arabicLabel}): ${att.displayName} ---")
                 inlineData(fileBytes, att.mimeType)
-            } else if (att.extractedText.isNotBlank()) {
-                text("\n--- محتوى المادة (${type.arabicLabel}): ${att.displayName} ---\n${att.extractedText.take(12_000)}")
+            } else {
+                if (type == StudyAttachmentType.PDF && attachedBytesBudget < TOTAL_INLINE_BUDGET_BYTES) {
+                    val pageImages = renderPdfFallbackImages(att.localFilePath, maxPages = 8)
+                    if (pageImages.isNotEmpty()) {
+                        text("\n--- صفحات مصورة من PDF الكبير (${att.displayName}) ---")
+                        pageImages.forEach { imgBytes ->
+                            if (attachedBytesBudget + imgBytes.size <= TOTAL_INLINE_BUDGET_BYTES) {
+                                attachedBytesBudget += imgBytes.size
+                                inlineData(imgBytes, "image/jpeg")
+                            }
+                        }
+                    }
+                }
+                if (att.extractedText.isNotBlank()) {
+                    text("\n--- محتوى المادة (${type.arabicLabel}): ${att.displayName} ---\n${att.extractedText.take(15_000)}")
+                }
             }
         }
     }
@@ -724,8 +905,22 @@ class StudyAiAssistant(
                 attachedBytesBudget += extraBytes.size
                 add(RestPart.Text("\n--- مرفق السؤال المباشر: ${extraAttachment.displayName} ---"))
                 add(RestPart.InlineData(extraAttachment.mimeType, extraBytes))
-            } else if (extraAttachment.extractedText.isNotBlank()) {
-                add(RestPart.Text("\n--- نص مرفق السؤال: ${extraAttachment.displayName} ---\n${extraAttachment.extractedText.take(10_000)}"))
+            } else {
+                if (extraAttachment.type == StudyAttachmentType.PDF) {
+                    val pageImages = renderPdfFallbackImages(extraAttachment.localFilePath, maxPages = 6)
+                    if (pageImages.isNotEmpty()) {
+                        add(RestPart.Text("\n--- صفحات مصورة من PDF (${extraAttachment.displayName}) ---"))
+                        pageImages.forEach { imgBytes ->
+                            if (attachedBytesBudget + imgBytes.size <= TOTAL_INLINE_BUDGET_BYTES) {
+                                attachedBytesBudget += imgBytes.size
+                                add(RestPart.InlineData("image/jpeg", imgBytes))
+                            }
+                        }
+                    }
+                }
+                if (extraAttachment.extractedText.isNotBlank()) {
+                    add(RestPart.Text("\n--- نص مرفق السؤال: ${extraAttachment.displayName} ---\n${extraAttachment.extractedText.take(12_000)}"))
+                }
             }
         }
 
@@ -740,10 +935,61 @@ class StudyAiAssistant(
                 attachedBytesBudget += fileBytes.size
                 add(RestPart.Text("\n--- مرفق المادة (${type.arabicLabel}): ${att.displayName} ---"))
                 add(RestPart.InlineData(att.mimeType, fileBytes))
-            } else if (att.extractedText.isNotBlank()) {
-                add(RestPart.Text("\n--- محتوى المادة (${type.arabicLabel}): ${att.displayName} ---\n${att.extractedText.take(12_000)}"))
+            } else {
+                if (type == StudyAttachmentType.PDF && attachedBytesBudget < TOTAL_INLINE_BUDGET_BYTES) {
+                    val pageImages = renderPdfFallbackImages(att.localFilePath, maxPages = 8)
+                    if (pageImages.isNotEmpty()) {
+                        add(RestPart.Text("\n--- صفحات مصورة من PDF الكبير (${att.displayName}) ---"))
+                        pageImages.forEach { imgBytes ->
+                            if (attachedBytesBudget + imgBytes.size <= TOTAL_INLINE_BUDGET_BYTES) {
+                                attachedBytesBudget += imgBytes.size
+                                add(RestPart.InlineData("image/jpeg", imgBytes))
+                            }
+                        }
+                    }
+                }
+                if (att.extractedText.isNotBlank()) {
+                    add(RestPart.Text("\n--- محتوى المادة (${type.arabicLabel}): ${att.displayName} ---\n${att.extractedText.take(15_000)}"))
+                }
             }
         }
+    }
+
+    private fun renderPdfFallbackImages(localFilePath: String, maxPages: Int): List<ByteArray> {
+        if (localFilePath.isBlank()) return emptyList()
+        val file = File(localFilePath)
+        if (!file.exists() || !file.isFile) return emptyList()
+        val outList = mutableListOf<ByteArray>()
+        var pfd: ParcelFileDescriptor? = null
+        var renderer: PdfRenderer? = null
+        try {
+            pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            renderer = PdfRenderer(pfd)
+            val count = min(renderer.pageCount, maxPages)
+            for (i in 0 until count) {
+                val page = renderer.openPage(i)
+                val targetW = (page.width * 1.5f).toInt().coerceIn(800, 1400)
+                val targetH = ((targetW.toFloat() / page.width.coerceAtLeast(1)) * page.height)
+                    .toInt()
+                    .coerceIn(800, 1900)
+                val bmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bmp)
+                canvas.drawColor(Color.WHITE)
+                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                page.close()
+                val baos = ByteArrayOutputStream()
+                bmp.compress(Bitmap.CompressFormat.JPEG, 78, baos)
+                bmp.recycle()
+                val bytes = baos.toByteArray()
+                if (bytes.isNotEmpty()) outList.add(bytes)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed rendering fallback pages for oversized PDF", e)
+        } finally {
+            runCatching { renderer?.close() }
+            runCatching { pfd?.close() }
+        }
+        return outList
     }
 
     private fun classifyAiException(e: Throwable, isPersonalKey: Boolean): StudyAiException {

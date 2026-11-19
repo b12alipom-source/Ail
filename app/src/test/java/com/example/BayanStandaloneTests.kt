@@ -2,6 +2,7 @@ package com.example
 
 import com.example.ai.extractErrorFromDummyToken
 import com.example.ai.isThrottleDetail
+import com.example.data.StudyAiTier
 import com.example.data.StudyMethod
 import com.example.export.SubtitleParser
 import com.example.media.VoskCatalogItem
@@ -363,5 +364,42 @@ class BayanStandaloneTests {
         val err = formatRestHttpError(403, """{"error":{"message":"API key not valid"}}""")
         assertTrue(err.contains("403"))
         assertTrue(err.contains("API key not valid"))
+    }
+
+    @Test
+    fun extractTextFromGeminiRestJson_skipsInternalThoughtParts() {
+        val restWithThoughtJson = """
+            {
+              "candidates": [
+                {
+                  "content": {
+                    "parts": [
+                      {"thought": true, "text": "Let me analyze the question step by step..."},
+                      {"text": "{\"overview\": \"ملخص نهائي\"}"},
+                      {"thought": false, "text": " متكامل"}
+                    ]
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val extracted = extractTextFromGeminiRestJson(restWithThoughtJson)
+        assertFalse(extracted.contains("step by step"))
+        assertEquals("{\"overview\": \"ملخص نهائي\"} متكامل", extracted)
+    }
+
+    @Test
+    fun studyAiTier_usesFlagshipNonLiteNonDeprecatedModels() {
+        assertEquals(StudyAiTier.DEEP_REASONING, StudyAiTier.fromKey("unknown_key"))
+        StudyAiTier.entries.forEach { tier ->
+            val allModels = listOf(tier.firebaseModel, tier.firebaseFallbackModel) + tier.personalModelChain()
+            allModels.forEach { modelId ->
+                assertFalse("Model $modelId must not use deprecated 2.5", modelId.contains("2.5"))
+                assertFalse("Model $modelId must not use -lite", modelId.contains("lite", ignoreCase = true))
+            }
+        }
+        assertEquals("gemini-3.1-pro-preview", StudyAiTier.DEEP_REASONING.personalRestModel)
+        assertTrue(StudyAiTier.DEEP_REASONING.personalModelChain().contains("gemini-3-flash-preview"))
     }
 }
