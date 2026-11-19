@@ -20,8 +20,20 @@ import com.example.study.extractBase64ImageFromGeminiRestJson
 import com.example.study.extractSseDataPayload
 import com.example.study.extractTextFromGeminiRestJson
 import com.example.study.formatRestHttpError
+import com.example.data.db.SubtitleCueEntity
 import com.example.study.parseStudyDossierJson
 import com.example.study.parseStudyPlanJson
+import com.example.vault.VaultCueItem
+import com.example.vault.VaultStudyAttachmentItem
+import com.example.vault.VaultStudyNotebookPayload
+import com.example.vault.VaultStudyScheduleItem
+import com.example.vault.VaultStudyVisualItem
+import com.example.vault.VaultVideoProjectPayload
+import com.example.vault.chunkSubtitleCues
+import com.example.vault.sanitizeVaultSegment
+import com.example.vault.selectPlayableUriCandidates
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -401,5 +413,129 @@ class BayanStandaloneTests {
         }
         assertEquals("gemini-3.1-pro-preview", StudyAiTier.DEEP_REASONING.personalRestModel)
         assertTrue(StudyAiTier.DEEP_REASONING.personalModelChain().contains("gemini-3-flash-preview"))
+    }
+
+    @Test
+    fun chunkSubtitleCues_splits250CuesIntoBoundedOrderedChunks() {
+        val shuffled = (0 until 250).reversed().map { idx ->
+            SubtitleCueEntity(
+                id = idx.toLong() + 1L,
+                projectId = 1L,
+                orderIndex = idx,
+                startMs = idx * 1_000L,
+                endMs = idx * 1_000L + 800L,
+                originalText = "Line $idx",
+                translatedText = "سطر $idx"
+            )
+        }
+        val chunks = chunkSubtitleCues(shuffled, chunkSize = 120)
+        assertEquals(3, chunks.size)
+        assertEquals(120, chunks[0].size)
+        assertEquals(120, chunks[1].size)
+        assertEquals(10, chunks[2].size)
+        assertEquals(0, chunks.first().first().orderIndex)
+        assertEquals(249, chunks.last().last().orderIndex)
+    }
+
+    @Test
+    fun sanitizeVaultSegment_normalizesUnsafeAndBlankNames() {
+        assertEquals("math_2026_v1", sanitizeVaultSegment("  math / 2026: v1! "))
+        assertEquals("item", sanitizeVaultSegment("ملخص الفيزياء 🔥", fallback = "item"))
+        assertEquals("backup", sanitizeVaultSegment("   ", fallback = "backup"))
+    }
+
+    @Test
+    fun selectPlayableUriCandidates_deduplicatesAndPreservesFallbackOrder() {
+        val candidates = selectPlayableUriCandidates(
+            primaryUri = "content://media/video/1",
+            archivedUri = "content://com.android.externalstorage.documents/tree/primary%3ABayanVault/video.mp4"
+        )
+        assertEquals(2, candidates.size)
+        assertEquals("content://media/video/1", candidates[0])
+        assertTrue(candidates[1].endsWith("video.mp4"))
+
+        val deduped = selectPlayableUriCandidates(
+            primaryUri = "content://vault/video.mp4",
+            archivedUri = "content://vault/video.mp4"
+        )
+        assertEquals(1, deduped.size)
+        assertTrue(selectPlayableUriCandidates("   ", "").isEmpty())
+    }
+
+    @Test
+    fun vaultPayloads_roundTripThroughKotlinxSerialization() {
+        val json = Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+        }
+        val videoPayload = VaultVideoProjectPayload(
+            syncId = "vid-sync-123",
+            title = "محاضرة الأحياء",
+            durationMs = 120_000L,
+            sourceLanguageCode = "en",
+            sourceLanguageName = "الإنجليزية",
+            targetLanguageCode = "ar",
+            targetLanguageName = "العربية",
+            summary = "ملخص كامل للمحاضرة",
+            folderSyncId = "folder-1",
+            videoFileName = "video.mp4",
+            createdAt = 1_700_000_000_000L,
+            updatedAt = 1_700_000_010_000L,
+            cues = listOf(
+                VaultCueItem(
+                    orderIndex = 0,
+                    startMs = 0L,
+                    endMs = 2_500L,
+                    originalText = "Welcome to biology",
+                    translatedText = "مرحباً بكم في الأحياء"
+                )
+            )
+        )
+        val encodedVideo = json.encodeToString(videoPayload)
+        val decodedVideo = json.decodeFromString<VaultVideoProjectPayload>(encodedVideo)
+        assertEquals(videoPayload, decodedVideo)
+
+        val studyPayload = VaultStudyNotebookPayload(
+            syncId = "study-sync-456",
+            title = "الأحياء الجزيئية",
+            preferredMethod = "FOCUSED_SUMMARY",
+            dailyMinutes = 60,
+            totalDays = 5,
+            summaryMarkdown = "# ملخص الفصل",
+            keyPointsText = "• الخلية\n• الحمض النووي",
+            dossierJson = "{\"overview\":\"ملخص\"}",
+            linkedProjectSyncId = "vid-sync-123",
+            createdAt = 1_700_000_000_000L,
+            updatedAt = 1_700_000_020_000L,
+            attachments = listOf(
+                VaultStudyAttachmentItem(
+                    displayName = "chapter1.pdf",
+                    attachmentType = "pdf",
+                    mimeType = "application/pdf",
+                    extractedText = "DNA structure"
+                )
+            ),
+            visuals = listOf(
+                VaultStudyVisualItem(
+                    title = "خريطة الخلية",
+                    styleKey = "INFOGRAPHIC",
+                    vaultImageFileName = "visual_0_1.png"
+                )
+            ),
+            scheduleItems = listOf(
+                VaultStudyScheduleItem(
+                    dayNumber = 1,
+                    dayLabel = "اليوم 1",
+                    timeSlot = "الصباح",
+                    taskTitle = "مراجعة النواة",
+                    taskDetail = "قراءة وحل أسئلة",
+                    durationMinutes = 45,
+                    completed = true
+                )
+            )
+        )
+        val encodedStudy = json.encodeToString(studyPayload)
+        val decodedStudy = json.decodeFromString<VaultStudyNotebookPayload>(encodedStudy)
+        assertEquals(studyPayload, decodedStudy)
     }
 }

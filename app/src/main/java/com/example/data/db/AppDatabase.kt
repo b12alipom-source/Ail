@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         StudyScheduleItemEntity::class,
         StudyMessageEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -162,6 +162,25 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE project_folders ADD COLUMN syncId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE project_folders ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+
+                db.execSQL("ALTER TABLE video_projects ADD COLUMN syncId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE video_projects ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE video_projects ADD COLUMN archivedVideoUri TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE video_projects ADD COLUMN vaultSavedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE video_projects ADD COLUMN cloudSyncedAt INTEGER NOT NULL DEFAULT 0")
+
+                db.execSQL("ALTER TABLE voice_translations ADD COLUMN syncId TEXT NOT NULL DEFAULT ''")
+
+                db.execSQL("ALTER TABLE study_notebooks ADD COLUMN syncId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE study_notebooks ADD COLUMN vaultSavedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE study_notebooks ADD COLUMN cloudSyncedAt INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -169,7 +188,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "bayan_translations.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                     .also { INSTANCE = it }
             }

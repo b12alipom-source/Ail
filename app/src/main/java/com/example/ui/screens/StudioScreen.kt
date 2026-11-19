@@ -291,7 +291,15 @@ private fun StudioReadyContent(
     val context = LocalContext.current
     val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var isVideoUnavailable by remember(state.project.videoUri) { mutableStateOf(false) }
+    var isVideoUnavailable by remember(state.project.videoUri, state.project.archivedVideoUri) { mutableStateOf(false) }
+    val playbackCandidates = remember(state.project.videoUri, state.project.archivedVideoUri) {
+        com.example.vault.selectPlayableUriCandidates(
+            state.project.videoUri,
+            state.project.archivedVideoUri
+        )
+    }
+    var playbackCandidateIndex by remember(state.project.id, playbackCandidates) { mutableStateOf(0) }
+    val activePlaybackUri = playbackCandidates.getOrNull(playbackCandidateIndex)
 
     BackHandler(enabled = isFullscreen) {
         onFullscreenChange(false)
@@ -334,21 +342,33 @@ private fun StudioReadyContent(
         ExoPlayer.Builder(context).build()
     }
 
-    LaunchedEffect(state.project.videoUri) {
+    LaunchedEffect(activePlaybackUri) {
+        if (activePlaybackUri.isNullOrBlank()) {
+            isVideoUnavailable = true
+            return@LaunchedEffect
+        }
         isVideoUnavailable = false
         runCatching {
-            val uri = Uri.parse(state.project.videoUri)
+            val uri = Uri.parse(activePlaybackUri)
             exoPlayer.setMediaItem(MediaItem.fromUri(uri))
             exoPlayer.prepare()
         }.onFailure {
-            isVideoUnavailable = true
+            if (playbackCandidateIndex + 1 < playbackCandidates.size) {
+                playbackCandidateIndex++
+            } else {
+                isVideoUnavailable = true
+            }
         }
     }
 
-    DisposableEffect(exoPlayer) {
+    DisposableEffect(exoPlayer, playbackCandidates.size) {
         val listener = object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
-                isVideoUnavailable = true
+                if (playbackCandidateIndex + 1 < playbackCandidates.size) {
+                    playbackCandidateIndex++
+                } else {
+                    isVideoUnavailable = true
+                }
             }
         }
         exoPlayer.addListener(listener)

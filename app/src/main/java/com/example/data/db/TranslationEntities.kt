@@ -4,13 +4,16 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import java.util.UUID
 
 @Entity(tableName = "project_folders")
 data class ProjectFolderEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
     val accentKey: String = "sapphire",
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val syncId: String = UUID.randomUUID().toString(),
+    val updatedAt: Long = System.currentTimeMillis()
 )
 
 @Entity(
@@ -29,7 +32,12 @@ data class VideoProjectEntity(
     val summary: String,
     val cueCount: Int,
     val createdAt: Long = System.currentTimeMillis(),
-    val folderId: Long? = null
+    val folderId: Long? = null,
+    val syncId: String = UUID.randomUUID().toString(),
+    val updatedAt: Long = System.currentTimeMillis(),
+    val archivedVideoUri: String = "",
+    val vaultSavedAt: Long = 0L,
+    val cloudSyncedAt: Long = 0L
 )
 
 @Entity(
@@ -63,7 +71,8 @@ data class VoiceTranslationEntity(
     val targetLanguageName: String,
     val originalText: String,
     val translatedText: String,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val syncId: String = UUID.randomUUID().toString()
 )
 
 @Entity(tableName = "study_notebooks")
@@ -80,7 +89,10 @@ data class StudyNotebookEntity(
     val lastEngineLabel: String = "",
     val linkedProjectId: Long? = null,
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val syncId: String = UUID.randomUUID().toString(),
+    val vaultSavedAt: Long = 0L,
+    val cloudSyncedAt: Long = 0L
 )
 
 @Entity(

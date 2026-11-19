@@ -99,6 +99,18 @@ fun CloudAndApkSheet(
     voskDownloadProgress: VoskDownloadProgress?,
     voskActionError: String?,
     securityReport: SecurityAuditReport,
+    vaultState: VaultBackupUiState,
+    onPickVaultFolder: () -> Unit,
+    onPickFolderAndRestore: () -> Unit,
+    onToggleAutoSave: (Boolean) -> Unit,
+    onToggleIncludeVideoCopy: (Boolean) -> Unit,
+    onBackupNowToVault: () -> Unit,
+    onRestoreNowFromVault: () -> Unit,
+    onSignInWithGoogle: () -> Unit,
+    onSignOutGoogle: () -> Unit,
+    onSyncNowToCloud: () -> Unit,
+    onRestoreNowFromCloud: () -> Unit,
+    onDismissVaultStatus: () -> Unit,
     onToggleOfflineMode: (Boolean) -> Unit,
     onRunAppCheckDiagnostics: () -> Unit,
     onDownloadPack: (String) -> Unit,
@@ -131,6 +143,22 @@ fun CloudAndApkSheet(
                 text = stringResource(R.string.cloud_status_title),
                 style = MaterialTheme.typography.titleLarge,
                 color = SilverPure
+            )
+
+            // 0. Permanent Device Vault & Google Cloud Sync
+            PermanentVaultAndSyncSection(
+                vaultState = vaultState,
+                onPickVaultFolder = onPickVaultFolder,
+                onPickFolderAndRestore = onPickFolderAndRestore,
+                onToggleAutoSave = onToggleAutoSave,
+                onToggleIncludeVideoCopy = onToggleIncludeVideoCopy,
+                onBackupNowToVault = onBackupNowToVault,
+                onRestoreNowFromVault = onRestoreNowFromVault,
+                onSignInWithGoogle = onSignInWithGoogle,
+                onSignOutGoogle = onSignOutGoogle,
+                onSyncNowToCloud = onSyncNowToCloud,
+                onRestoreNowFromCloud = onRestoreNowFromCloud,
+                onDismissStatus = onDismissVaultStatus
             )
 
             // 1. Standalone Offline Engine Toggle

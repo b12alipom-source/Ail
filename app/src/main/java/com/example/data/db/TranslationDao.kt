@@ -13,11 +13,28 @@ interface TranslationDao {
     @Query("SELECT * FROM project_folders ORDER BY createdAt ASC")
     fun getAllFolders(): Flow<List<ProjectFolderEntity>>
 
+    @Query("SELECT * FROM project_folders ORDER BY createdAt ASC")
+    suspend fun getAllFoldersList(): List<ProjectFolderEntity>
+
+    @Query("SELECT * FROM project_folders WHERE id = :folderId")
+    suspend fun getFolderById(folderId: Long): ProjectFolderEntity?
+
+    @Query("SELECT * FROM project_folders WHERE syncId = :syncId LIMIT 1")
+    suspend fun getFolderBySyncId(syncId: String): ProjectFolderEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertFolder(folder: ProjectFolderEntity): Long
 
-    @Query("UPDATE project_folders SET name = :name, accentKey = :accentKey WHERE id = :folderId")
-    suspend fun updateFolder(folderId: Long, name: String, accentKey: String)
+    @Query("UPDATE project_folders SET name = :name, accentKey = :accentKey, updatedAt = :updatedAt WHERE id = :folderId")
+    suspend fun updateFolder(
+        folderId: Long,
+        name: String,
+        accentKey: String,
+        updatedAt: Long = System.currentTimeMillis()
+    )
+
+    @Query("UPDATE project_folders SET syncId = :syncId WHERE id = :folderId")
+    suspend fun updateFolderSyncId(folderId: Long, syncId: String)
 
     @Query("UPDATE video_projects SET folderId = NULL WHERE folderId = :folderId")
     suspend fun unfileProjectsInFolder(folderId: Long)
@@ -35,23 +52,44 @@ interface TranslationDao {
     @Query("SELECT * FROM video_projects ORDER BY createdAt DESC")
     fun getAllProjects(): Flow<List<VideoProjectEntity>>
 
+    @Query("SELECT * FROM video_projects ORDER BY createdAt DESC")
+    suspend fun getAllProjectsList(): List<VideoProjectEntity>
+
     @Query("SELECT * FROM video_projects WHERE id = :projectId")
     fun observeProjectById(projectId: Long): Flow<VideoProjectEntity?>
 
     @Query("SELECT * FROM video_projects WHERE id = :projectId")
     suspend fun getProjectById(projectId: Long): VideoProjectEntity?
 
-    @Query("UPDATE video_projects SET title = :title WHERE id = :projectId")
-    suspend fun renameProject(projectId: Long, title: String)
+    @Query("SELECT * FROM video_projects WHERE syncId = :syncId LIMIT 1")
+    suspend fun getProjectBySyncId(syncId: String): VideoProjectEntity?
 
-    @Query("UPDATE video_projects SET folderId = :folderId WHERE id = :projectId")
-    suspend fun moveProjectToFolder(projectId: Long, folderId: Long?)
+    @Query("UPDATE video_projects SET title = :title, updatedAt = :updatedAt WHERE id = :projectId")
+    suspend fun renameProject(projectId: Long, title: String, updatedAt: Long = System.currentTimeMillis())
+
+    @Query("UPDATE video_projects SET folderId = :folderId, updatedAt = :updatedAt WHERE id = :projectId")
+    suspend fun moveProjectToFolder(projectId: Long, folderId: Long?, updatedAt: Long = System.currentTimeMillis())
+
+    @Query("UPDATE video_projects SET syncId = :syncId WHERE id = :projectId")
+    suspend fun updateProjectSyncId(projectId: Long, syncId: String)
+
+    @Query("UPDATE video_projects SET archivedVideoUri = :archivedVideoUri WHERE id = :projectId")
+    suspend fun updateProjectArchivedVideoUri(projectId: Long, archivedVideoUri: String)
+
+    @Query("UPDATE video_projects SET vaultSavedAt = :timestamp WHERE id = :projectId")
+    suspend fun updateProjectVaultSavedAt(projectId: Long, timestamp: Long)
+
+    @Query("UPDATE video_projects SET cloudSyncedAt = :timestamp WHERE id = :projectId")
+    suspend fun updateProjectCloudSyncedAt(projectId: Long, timestamp: Long)
 
     @Query("SELECT * FROM subtitle_cues WHERE projectId = :projectId ORDER BY orderIndex ASC, startMs ASC")
     fun observeCuesForProject(projectId: Long): Flow<List<SubtitleCueEntity>>
 
     @Query("SELECT * FROM subtitle_cues WHERE projectId = :projectId ORDER BY orderIndex ASC, startMs ASC")
     suspend fun getCuesForProject(projectId: Long): List<SubtitleCueEntity>
+
+    @Query("DELETE FROM subtitle_cues WHERE projectId = :projectId")
+    suspend fun deleteCuesForProject(projectId: Long)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertProject(project: VideoProjectEntity): Long
@@ -72,23 +110,44 @@ interface TranslationDao {
         return projectId
     }
 
+    @Transaction
+    suspend fun replaceProjectCues(
+        projectId: Long,
+        cues: List<SubtitleCueEntity>,
+        updatedAt: Long = System.currentTimeMillis()
+    ) {
+        deleteCuesForProject(projectId)
+        val mapped = cues.mapIndexed { index, cue ->
+            cue.copy(id = 0L, projectId = projectId, orderIndex = index)
+        }
+        insertCues(mapped)
+        updateProjectCueCount(projectId, mapped.size, updatedAt)
+    }
+
+    @Query("UPDATE video_projects SET cueCount = :cueCount, updatedAt = :updatedAt WHERE id = :projectId")
+    suspend fun updateProjectCueCount(projectId: Long, cueCount: Int, updatedAt: Long)
+
     @Query(
         "UPDATE subtitle_cues SET originalText = :originalText, translatedText = :translatedText WHERE id = :cueId"
     )
     suspend fun updateCueText(cueId: Long, originalText: String, translatedText: String)
 
+    @Query("SELECT projectId FROM subtitle_cues WHERE id = :cueId LIMIT 1")
+    suspend fun getProjectIdForCue(cueId: Long): Long?
+
     @Query(
-        "UPDATE video_projects SET targetLanguageCode = :targetCode, targetLanguageName = :targetName, summary = :summary WHERE id = :projectId"
+        "UPDATE video_projects SET targetLanguageCode = :targetCode, targetLanguageName = :targetName, summary = :summary, updatedAt = :updatedAt WHERE id = :projectId"
     )
     suspend fun updateProjectTargetLanguage(
         projectId: Long,
         targetCode: String,
         targetName: String,
-        summary: String
+        summary: String,
+        updatedAt: Long = System.currentTimeMillis()
     )
 
-    @Query("UPDATE video_projects SET videoUri = :videoUri WHERE id = :projectId")
-    suspend fun updateProjectVideoUri(projectId: Long, videoUri: String)
+    @Query("UPDATE video_projects SET videoUri = :videoUri, updatedAt = :updatedAt WHERE id = :projectId")
+    suspend fun updateProjectVideoUri(projectId: Long, videoUri: String, updatedAt: Long = System.currentTimeMillis())
 
     @Query("UPDATE subtitle_cues SET translatedText = :translatedText WHERE id = :cueId")
     suspend fun updateCueTranslation(cueId: Long, translatedText: String)
@@ -114,6 +173,15 @@ interface TranslationDao {
     @Query("SELECT * FROM voice_translations ORDER BY createdAt DESC")
     fun getAllVoiceTranslations(): Flow<List<VoiceTranslationEntity>>
 
+    @Query("SELECT * FROM voice_translations ORDER BY createdAt DESC")
+    suspend fun getAllVoiceTranslationsList(): List<VoiceTranslationEntity>
+
+    @Query("SELECT * FROM voice_translations WHERE syncId = :syncId LIMIT 1")
+    suspend fun getVoiceTranslationBySyncId(syncId: String): VoiceTranslationEntity?
+
+    @Query("UPDATE voice_translations SET syncId = :syncId WHERE id = :id")
+    suspend fun updateVoiceSyncId(id: Long, syncId: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertVoiceTranslation(entry: VoiceTranslationEntity): Long
 
@@ -124,8 +192,23 @@ interface TranslationDao {
     @Query("SELECT * FROM study_notebooks ORDER BY updatedAt DESC")
     fun getAllStudyNotebooks(): Flow<List<StudyNotebookEntity>>
 
+    @Query("SELECT * FROM study_notebooks ORDER BY updatedAt DESC")
+    suspend fun getAllStudyNotebooksList(): List<StudyNotebookEntity>
+
     @Query("SELECT * FROM study_notebooks WHERE id = :notebookId")
     suspend fun getStudyNotebookById(notebookId: Long): StudyNotebookEntity?
+
+    @Query("SELECT * FROM study_notebooks WHERE syncId = :syncId LIMIT 1")
+    suspend fun getStudyNotebookBySyncId(syncId: String): StudyNotebookEntity?
+
+    @Query("UPDATE study_notebooks SET syncId = :syncId WHERE id = :notebookId")
+    suspend fun updateStudyNotebookSyncId(notebookId: Long, syncId: String)
+
+    @Query("UPDATE study_notebooks SET vaultSavedAt = :timestamp WHERE id = :notebookId")
+    suspend fun updateStudyVaultSavedAt(notebookId: Long, timestamp: Long)
+
+    @Query("UPDATE study_notebooks SET cloudSyncedAt = :timestamp WHERE id = :notebookId")
+    suspend fun updateStudyCloudSyncedAt(notebookId: Long, timestamp: Long)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStudyNotebook(notebook: StudyNotebookEntity): Long
@@ -167,6 +250,9 @@ interface TranslationDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStudyAttachment(attachment: StudyAttachmentEntity): Long
 
+    @Query("DELETE FROM study_attachments WHERE notebookId = :notebookId")
+    suspend fun deleteStudyAttachmentsForNotebook(notebookId: Long)
+
     @Query("DELETE FROM study_attachments WHERE id = :attachmentId")
     suspend fun deleteStudyAttachmentById(attachmentId: Long)
 
@@ -179,11 +265,17 @@ interface TranslationDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStudyVisual(visual: StudyVisualEntity): Long
 
+    @Query("DELETE FROM study_visuals WHERE notebookId = :notebookId")
+    suspend fun deleteStudyVisualsForNotebook(notebookId: Long)
+
     @Query("DELETE FROM study_visuals WHERE id = :visualId")
     suspend fun deleteStudyVisualById(visualId: Long)
 
     @Query("SELECT * FROM study_schedule_items WHERE notebookId = :notebookId ORDER BY dayNumber ASC, id ASC")
     fun observeStudySchedule(notebookId: Long): Flow<List<StudyScheduleItemEntity>>
+
+    @Query("SELECT * FROM study_schedule_items WHERE notebookId = :notebookId ORDER BY dayNumber ASC, id ASC")
+    suspend fun getStudyScheduleList(notebookId: Long): List<StudyScheduleItemEntity>
 
     @Query("DELETE FROM study_schedule_items WHERE notebookId = :notebookId")
     suspend fun deleteStudyScheduleForNotebook(notebookId: Long)
@@ -217,6 +309,9 @@ interface TranslationDao {
 
     @Query("UPDATE study_schedule_items SET isCompleted = :completed WHERE id = :itemId")
     suspend fun setStudyScheduleItemCompleted(itemId: Long, completed: Boolean)
+
+    @Query("SELECT notebookId FROM study_schedule_items WHERE id = :itemId LIMIT 1")
+    suspend fun getNotebookIdForScheduleItem(itemId: Long): Long?
 
     @Query("SELECT * FROM study_messages WHERE notebookId = :notebookId ORDER BY createdAt ASC, id ASC")
     fun observeStudyMessages(notebookId: Long): Flow<List<StudyMessageEntity>>

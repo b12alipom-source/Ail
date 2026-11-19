@@ -1,0 +1,219 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Shared Security Primitives ---
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // --- Validation Helpers ---
+    function isValidProjectFolder(data) {
+      return data.syncId is string && data.syncId.size() >= 1 && data.syncId.size() <= 128 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.accentKey is string && data.accentKey.size() >= 1 && data.accentKey.size() <= 32 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidVideoProject(data) {
+      return data.syncId is string && data.syncId.size() >= 1 && data.syncId.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             data.durationMs is int && data.durationMs >= 0 && data.durationMs <= 86400000 &&
+             data.sourceLanguageCode is string && data.sourceLanguageCode.size() >= 1 && data.sourceLanguageCode.size() <= 16 &&
+             data.sourceLanguageName is string && data.sourceLanguageName.size() >= 1 && data.sourceLanguageName.size() <= 64 &&
+             data.targetLanguageCode is string && data.targetLanguageCode.size() >= 1 && data.targetLanguageCode.size() <= 16 &&
+             data.targetLanguageName is string && data.targetLanguageName.size() >= 1 && data.targetLanguageName.size() <= 64 &&
+             data.summary is string && data.summary.size() <= 2000 &&
+             data.cueCount is int && data.cueCount >= 0 && data.cueCount <= 50000 &&
+             (!('folderSyncId' in data) || (data.folderSyncId is string && data.folderSyncId.size() <= 128)) &&
+             data.hasArchivedVideo is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidCueChunk(data) {
+      return data.chunkIndex is int && data.chunkIndex >= 0 && data.chunkIndex <= 500 &&
+             data.cues is list && data.cues.size() <= 120 &&
+             (data.cues.size() == 0 || data.cues[0] is map) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidStudyNotebook(data) {
+      return data.syncId is string && data.syncId.size() >= 1 && data.syncId.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             data.preferredMethod is string && data.preferredMethod.size() >= 1 && data.preferredMethod.size() <= 40 &&
+             data.dailyMinutes is int && data.dailyMinutes >= 1 && data.dailyMinutes <= 600 &&
+             data.totalDays is int && data.totalDays >= 1 && data.totalDays <= 60 &&
+             data.summaryMarkdown is string && data.summaryMarkdown.size() <= 120000 &&
+             data.keyPointsText is string && data.keyPointsText.size() <= 20000 &&
+             data.dossierJson is string && data.dossierJson.size() <= 150000 &&
+             data.mindMapJson is string && data.mindMapJson.size() <= 150000 &&
+             data.lastEngineLabel is string && data.lastEngineLabel.size() <= 120 &&
+             (!('linkedProjectSyncId' in data) || (data.linkedProjectSyncId is string && data.linkedProjectSyncId.size() <= 128)) &&
+             data.attachments is list && data.attachments.size() <= 25 &&
+             (data.attachments.size() == 0 || data.attachments[0] is map) &&
+             data.scheduleItems is list && data.scheduleItems.size() <= 60 &&
+             (data.scheduleItems.size() == 0 || data.scheduleItems[0] is map) &&
+             data.messages is list && data.messages.size() <= 40 &&
+             (data.messages.size() == 0 || data.messages[0] is map) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidVoiceTranslation(data) {
+      return data.syncId is string && data.syncId.size() >= 1 && data.syncId.size() <= 128 &&
+             data.sourceLanguageCode is string && data.sourceLanguageCode.size() >= 1 && data.sourceLanguageCode.size() <= 16 &&
+             data.sourceLanguageName is string && data.sourceLanguageName.size() >= 1 && data.sourceLanguageName.size() <= 64 &&
+             data.targetLanguageCode is string && data.targetLanguageCode.size() >= 1 && data.targetLanguageCode.size() <= 16 &&
+             data.targetLanguageName is string && data.targetLanguageName.size() >= 1 && data.targetLanguageName.size() <= 64 &&
+             data.originalText is string && data.originalText.size() >= 1 && data.originalText.size() <= 8000 &&
+             data.translatedText is string && data.translatedText.size() >= 1 && data.translatedText.size() <= 8000 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    // --- User-Scoped Collections ---
+    match /users/{userId}/folders/{folderId} {
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId) && isValidId(folderId);
+      allow create: if isOwner(userId) &&
+                       isValidId(folderId) &&
+                       incoming().keys().hasAll(['syncId', 'name', 'accentKey', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['syncId', 'name', 'accentKey', 'createdAt', 'updatedAt']) &&
+                       incoming().syncId == folderId &&
+                       isValidProjectFolder(incoming());
+      allow update: if isOwner(userId) &&
+                       isValidId(folderId) &&
+                       isValidProjectFolder(incoming()) &&
+                       incoming().syncId == existing().syncId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['name', 'accentKey', 'updatedAt']);
+      allow delete: if isOwner(userId) && isValidId(folderId);
+    }
+
+    match /users/{userId}/videoProjects/{projectId} {
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId) && isValidId(projectId);
+      allow create: if isOwner(userId) &&
+                       isValidId(projectId) &&
+                       incoming().keys().hasAll([
+                         'syncId', 'title', 'durationMs', 'sourceLanguageCode', 'sourceLanguageName',
+                         'targetLanguageCode', 'targetLanguageName', 'summary', 'cueCount',
+                         'hasArchivedVideo', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'syncId', 'title', 'durationMs', 'sourceLanguageCode', 'sourceLanguageName',
+                         'targetLanguageCode', 'targetLanguageName', 'summary', 'cueCount',
+                         'folderSyncId', 'hasArchivedVideo', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().syncId == projectId &&
+                       isValidVideoProject(incoming());
+      allow update: if isOwner(userId) &&
+                       isValidId(projectId) &&
+                       isValidVideoProject(incoming()) &&
+                       incoming().syncId == existing().syncId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'title', 'durationMs', 'sourceLanguageCode', 'sourceLanguageName',
+                         'targetLanguageCode', 'targetLanguageName', 'summary', 'cueCount',
+                         'folderSyncId', 'hasArchivedVideo', 'updatedAt'
+                       ]);
+      allow delete: if isOwner(userId) && isValidId(projectId);
+
+      match /cueChunks/{chunkId} {
+        allow list: if isOwner(userId);
+        allow get: if isOwner(userId) && isValidId(projectId) && isValidId(chunkId);
+        allow create: if isOwner(userId) &&
+                         isValidId(projectId) &&
+                         isValidId(chunkId) &&
+                         incoming().keys().hasAll(['chunkIndex', 'cues', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['chunkIndex', 'cues', 'createdAt', 'updatedAt']) &&
+                         isValidCueChunk(incoming()) &&
+                         exists(/databases/$(database)/documents/users/$(userId)/videoProjects/$(projectId));
+        allow update: if isOwner(userId) &&
+                         isValidId(projectId) &&
+                         isValidId(chunkId) &&
+                         isValidCueChunk(incoming()) &&
+                         incoming().chunkIndex == existing().chunkIndex &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['cues', 'updatedAt']) &&
+                         exists(/databases/$(database)/documents/users/$(userId)/videoProjects/$(projectId));
+        allow delete: if isOwner(userId) && isValidId(projectId) && isValidId(chunkId);
+      }
+    }
+
+    match /users/{userId}/studyNotebooks/{notebookId} {
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId) && isValidId(notebookId);
+      allow create: if isOwner(userId) &&
+                       isValidId(notebookId) &&
+                       incoming().keys().hasAll([
+                         'syncId', 'title', 'preferredMethod', 'dailyMinutes', 'totalDays',
+                         'summaryMarkdown', 'keyPointsText', 'dossierJson', 'mindMapJson',
+                         'lastEngineLabel', 'attachments', 'scheduleItems', 'messages',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'syncId', 'title', 'preferredMethod', 'dailyMinutes', 'totalDays',
+                         'summaryMarkdown', 'keyPointsText', 'dossierJson', 'mindMapJson',
+                         'lastEngineLabel', 'linkedProjectSyncId', 'attachments',
+                         'scheduleItems', 'messages', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().syncId == notebookId &&
+                       isValidStudyNotebook(incoming());
+      allow update: if isOwner(userId) &&
+                       isValidId(notebookId) &&
+                       isValidStudyNotebook(incoming()) &&
+                       incoming().syncId == existing().syncId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'title', 'preferredMethod', 'dailyMinutes', 'totalDays',
+                         'summaryMarkdown', 'keyPointsText', 'dossierJson', 'mindMapJson',
+                         'lastEngineLabel', 'linkedProjectSyncId', 'attachments',
+                         'scheduleItems', 'messages', 'updatedAt'
+                       ]);
+      allow delete: if isOwner(userId) && isValidId(notebookId);
+    }
+
+    match /users/{userId}/voiceTranslations/{voiceId} {
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId) && isValidId(voiceId);
+      allow create: if isOwner(userId) &&
+                       isValidId(voiceId) &&
+                       incoming().keys().hasAll([
+                         'syncId', 'sourceLanguageCode', 'sourceLanguageName',
+                         'targetLanguageCode', 'targetLanguageName',
+                         'originalText', 'translatedText', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'syncId', 'sourceLanguageCode', 'sourceLanguageName',
+                         'targetLanguageCode', 'targetLanguageName',
+                         'originalText', 'translatedText', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().syncId == voiceId &&
+                       isValidVoiceTranslation(incoming());
+      allow update: if isOwner(userId) &&
+                       isValidId(voiceId) &&
+                       isValidVoiceTranslation(incoming()) &&
+                       incoming().syncId == existing().syncId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'sourceLanguageCode', 'sourceLanguageName',
+                         'targetLanguageCode', 'targetLanguageName',
+                         'originalText', 'translatedText', 'updatedAt'
+                       ]);
+      allow delete: if isOwner(userId) && isValidId(voiceId);
+    }
+  }
+}
