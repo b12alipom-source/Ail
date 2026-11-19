@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -17,6 +18,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
+import androidx.compose.material.icons.automirrored.outlined.Notes
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
@@ -24,9 +27,8 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.Lightbulb
-import androidx.compose.material.icons.outlined.MenuBook
-import androidx.compose.material.icons.outlined.Notes
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.VideoLibrary
@@ -43,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,6 +56,7 @@ import com.example.data.StudyMethod
 import com.example.data.db.StudyAttachmentEntity
 import com.example.data.db.StudyNotebookEntity
 import com.example.data.db.StudyScheduleItemEntity
+import com.example.media.formatStudySummaryForShare
 import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.IceSapphire
@@ -76,7 +80,7 @@ internal fun StudyAttachmentChip(
     val icon = when (type) {
         StudyAttachmentType.PDF -> Icons.Outlined.PictureAsPdf
         StudyAttachmentType.IMAGE -> Icons.Outlined.Image
-        StudyAttachmentType.TEXT -> Icons.Outlined.Notes
+        StudyAttachmentType.TEXT -> Icons.AutoMirrored.Outlined.Notes
         StudyAttachmentType.VIDEO_TRANSCRIPT -> Icons.Outlined.VideoLibrary
     }
 
@@ -180,7 +184,7 @@ internal fun StudySummaryTabContent(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        // Header strip with Engine badge and Copy All button
+        // Header strip with Engine badge, Share and Copy All buttons
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -189,27 +193,59 @@ internal fun StudySummaryTabContent(
             Text(
                 text = notebook.lastEngineLabel.ifBlank { StudyMethod.fromKey(notebook.preferredMethod).arabicLabel },
                 style = MaterialTheme.typography.labelMedium,
-                color = IceSapphireGlow
+                color = IceSapphireGlow,
+                modifier = Modifier.weight(1f)
             )
-            IconButton(
-                onClick = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(
-                        ClipData.newPlainText(
-                            notebook.title,
-                            "${notebook.keyPointsText}\n\n${notebook.summaryMarkdown}"
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = {
+                        val exportText = formatStudySummaryForShare(
+                            title = notebook.title,
+                            methodLabel = StudyMethod.fromKey(notebook.preferredMethod).arabicLabel,
+                            keyPoints = notebook.keyPointsText,
+                            summaryMarkdown = notebook.summaryMarkdown,
+                            dossier = dossier
                         )
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, notebook.title)
+                            putExtra(Intent.EXTRA_TEXT, exportText)
+                        }
+                        context.startActivity(Intent.createChooser(shareIntent, "مشاركة الملخص"))
+                    },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("share_study_summary_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.IosShare,
+                        contentDescription = "مشاركة وتصدير الملخص",
+                        tint = IceSapphireGlow,
+                        modifier = Modifier.size(18.dp)
                     )
-                    Toast.makeText(context, "تم نسخ الملخص بالكامل", Toast.LENGTH_SHORT).show()
-                },
-                modifier = Modifier.size(48.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.ContentCopy,
-                    contentDescription = "نسخ الملخص بالكامل",
-                    tint = SilverMetallic,
-                    modifier = Modifier.size(18.dp)
-                )
+                }
+                IconButton(
+                    onClick = {
+                        val exportText = formatStudySummaryForShare(
+                            title = notebook.title,
+                            methodLabel = StudyMethod.fromKey(notebook.preferredMethod).arabicLabel,
+                            keyPoints = notebook.keyPointsText,
+                            summaryMarkdown = notebook.summaryMarkdown,
+                            dossier = dossier
+                        )
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText(notebook.title, exportText))
+                        Toast.makeText(context, "تم نسخ الملخص بالكامل", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.ContentCopy,
+                        contentDescription = "نسخ الملخص بالكامل",
+                        tint = SilverMetallic,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
 
@@ -356,7 +392,7 @@ internal fun StudySummaryTabContent(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(Icons.Outlined.MenuBook, contentDescription = null, tint = IceSapphireGlow, modifier = Modifier.size(18.dp))
+                            Icon(Icons.AutoMirrored.Outlined.MenuBook, contentDescription = null, tint = IceSapphireGlow, modifier = Modifier.size(18.dp))
                             Text(
                                 text = "قاموس المصطلحات",
                                 style = MaterialTheme.typography.titleSmall,

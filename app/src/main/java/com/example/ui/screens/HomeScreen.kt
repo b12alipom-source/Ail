@@ -38,6 +38,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GraphicEq
@@ -45,19 +46,17 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.outlined.AutoAwesome
-import androidx.compose.material.icons.outlined.Backup
 import androidx.compose.material.icons.outlined.ClosedCaption
 import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.FolderSpecial
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.OfflinePin
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material.icons.outlined.VerifiedUser
@@ -111,9 +110,6 @@ import com.example.ui.BayanViewModel
 import com.example.ui.ProcessingUiState
 import com.example.ui.components.CloudAndApkSheet
 import com.example.ui.components.LanguagePickerSheet
-import com.example.ui.components.PermanentVaultAndSyncSheet
-import com.example.ui.components.ReinstallRecoveryBanner
-import com.example.ui.components.findActivityOrNull
 import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CoralError
 import com.example.ui.theme.EmeraldSuccess
@@ -154,8 +150,8 @@ fun HomeScreen(
     val downloadedVoskModels by viewModel.downloadedVoskModels.collectAsStateWithLifecycle()
     val voskDownloadProgress by viewModel.voskDownloadProgress.collectAsStateWithLifecycle()
     val voskActionError by viewModel.voskActionError.collectAsStateWithLifecycle()
-    val studyNotebooks by viewModel.studyNotebooks.collectAsStateWithLifecycle()
-    val vaultState by viewModel.vaultUiState.collectAsStateWithLifecycle()
+    val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
+    val storageNotice by viewModel.storageNotice.collectAsStateWithLifecycle()
     val view = LocalView.current
 
     val isActivelyProcessing = processingState is ProcessingUiState.ExtractingAudio ||
@@ -170,7 +166,6 @@ fun HomeScreen(
     var showSourcePicker by remember { mutableStateOf(false) }
     var showTargetPicker by remember { mutableStateOf(false) }
     var showCloudInfoSheet by remember { mutableStateOf(false) }
-    var showVaultSyncSheet by remember { mutableStateOf(false) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var folderPendingEdit by remember { mutableStateOf<ProjectFolderEntity?>(null) }
     var folderPendingDelete by remember { mutableStateOf<ProjectFolderEntity?>(null) }
@@ -200,27 +195,6 @@ fun HomeScreen(
         if (uri != null) {
             viewModel.importAndTranslateSubtitleFile(uri, onCompleted = onOpenProject)
         }
-    }
-
-    val vaultSetupLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            viewModel.onVaultFolderPicked(uri, runBackupOrRestoreIfEmpty = true)
-        }
-    }
-
-    val vaultRestoreLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            viewModel.restoreFromDeviceVault(uri)
-        }
-    }
-
-    val signInAndSyncCloud: () -> Unit = {
-        val activityCtx = context.findActivityOrNull() ?: context
-        viewModel.signInWithGoogle(activityCtx, autoSyncOrRestore = true)
     }
 
     val launchVideoPicker = {
@@ -276,9 +250,10 @@ fun HomeScreen(
                 BayanTopHeader(
                     offlineEngineMode = offlineEngineMode,
                     appCheckStatus = appCheckStatus,
-                    isVaultProtected = vaultState.settings.isVaultConfigured || vaultState.signedInUser != null,
-                    onVaultSyncClick = { showVaultSyncSheet = true },
-                    onCloudBadgeClick = { showCloudInfoSheet = true }
+                    onCloudBadgeClick = {
+                        viewModel.refreshStorageStats()
+                        showCloudInfoSheet = true
+                    }
                 )
             }
 
@@ -315,56 +290,6 @@ fun HomeScreen(
                             onDismiss = { viewModel.dismissProcessingError() }
                         )
                     }
-                }
-
-                if (!showCloudInfoSheet && !showVaultSyncSheet &&
-                    (vaultState.statusMessage != null || vaultState.errorMessage != null)
-                ) {
-                    item {
-                        val isErr = vaultState.errorMessage != null
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = if (isErr) CoralError.copy(alpha = 0.14f) else EmeraldSuccess.copy(alpha = 0.14f),
-                            border = BorderStroke(
-                                1.dp,
-                                if (isErr) CoralError.copy(alpha = 0.45f) else EmeraldSuccess.copy(alpha = 0.45f)
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = vaultState.errorMessage ?: vaultState.statusMessage.orEmpty(),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = SilverPure,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                TextButton(onClick = { viewModel.dismissVaultStatus() }) {
-                                    Text("حسناً", color = if (isErr) CoralError else EmeraldSuccess)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                item {
-                    ReinstallRecoveryBanner(
-                        isLocalLibraryEmpty = allProjects.isEmpty() && studyNotebooks.isEmpty(),
-                        vaultState = vaultState,
-                        onPickVaultFolderForSetup = { vaultSetupLauncher.launch(null) },
-                        onPickVaultFolderForRestore = { vaultRestoreLauncher.launch(null) },
-                        onSignInAndRestoreCloud = {
-                            if (vaultState.signedInUser != null) {
-                                viewModel.restoreFromCloud()
-                            } else {
-                                signInAndSyncCloud()
-                            }
-                        },
-                        onOpenFullBackupSheet = { showVaultSyncSheet = true },
-                        onDismiss = { viewModel.dismissVaultBanner() }
-                    )
                 }
 
                 item {
@@ -472,18 +397,10 @@ fun HomeScreen(
             voskDownloadProgress = voskDownloadProgress,
             voskActionError = voskActionError,
             securityReport = viewModel.securityReport,
-            vaultState = vaultState,
-            onPickVaultFolder = { vaultSetupLauncher.launch(null) },
-            onPickFolderAndRestore = { vaultRestoreLauncher.launch(null) },
-            onToggleAutoSave = { viewModel.setVaultAutoSave(it) },
-            onToggleIncludeVideoCopy = { viewModel.setVaultIncludeVideoCopy(it) },
-            onBackupNowToVault = { viewModel.backupAllToDeviceVault() },
-            onRestoreNowFromVault = { viewModel.restoreFromDeviceVault() },
-            onSignInWithGoogle = signInAndSyncCloud,
-            onSignOutGoogle = { viewModel.signOutGoogle(context) },
-            onSyncNowToCloud = { viewModel.syncAllToCloud() },
-            onRestoreNowFromCloud = { viewModel.restoreFromCloud() },
-            onDismissVaultStatus = { viewModel.dismissVaultStatus() },
+            storageStats = storageStats,
+            storageNotice = storageNotice,
+            onClearTempCache = { viewModel.clearTempCache() },
+            onDismissStorageNotice = { viewModel.dismissStorageNotice() },
             onToggleOfflineMode = { viewModel.setOfflineEngineMode(it) },
             onRunAppCheckDiagnostics = { viewModel.runAppCheckDiagnostics() },
             onDownloadPack = { viewModel.downloadOfflinePack(it) },
@@ -493,24 +410,6 @@ fun HomeScreen(
             onDeleteVoskModel = { viewModel.deleteVoskModel(it) },
             onDismissVoskError = { viewModel.dismissVoskError() },
             onDismiss = { showCloudInfoSheet = false }
-        )
-    }
-
-    if (showVaultSyncSheet) {
-        PermanentVaultAndSyncSheet(
-            vaultState = vaultState,
-            onPickVaultFolder = { vaultSetupLauncher.launch(null) },
-            onPickFolderAndRestore = { vaultRestoreLauncher.launch(null) },
-            onToggleAutoSave = { viewModel.setVaultAutoSave(it) },
-            onToggleIncludeVideoCopy = { viewModel.setVaultIncludeVideoCopy(it) },
-            onBackupNowToVault = { viewModel.backupAllToDeviceVault() },
-            onRestoreNowFromVault = { viewModel.restoreFromDeviceVault() },
-            onSignInWithGoogle = signInAndSyncCloud,
-            onSignOutGoogle = { viewModel.signOutGoogle(context) },
-            onSyncNowToCloud = { viewModel.syncAllToCloud() },
-            onRestoreNowFromCloud = { viewModel.restoreFromCloud() },
-            onDismissStatus = { viewModel.dismissVaultStatus() },
-            onDismiss = { showVaultSyncSheet = false }
         )
     }
 
@@ -642,8 +541,6 @@ fun HomeScreen(
 private fun BayanTopHeader(
     offlineEngineMode: Boolean,
     appCheckStatus: AppCheckDiagnosticState,
-    isVaultProtected: Boolean,
-    onVaultSyncClick: () -> Unit,
     onCloudBadgeClick: () -> Unit
 ) {
     Row(
@@ -663,55 +560,37 @@ private fun BayanTopHeader(
                 color = SilverMuted
             )
         }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        Surface(
+            shape = RoundedCornerShape(99.dp),
+            color = MidnightSurfaceHigh,
+            border = BorderStroke(1.dp, MidnightBorder),
+            modifier = Modifier
+                .testTag("cloud_status_badge")
+                .clickable { onCloudBadgeClick() }
         ) {
-            IconButton(
-                onClick = onVaultSyncClick,
-                modifier = Modifier
-                    .size(48.dp)
-                    .testTag("open_vault_sync_button")
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.Backup,
-                    contentDescription = "الحفظ الدائم والمزامنة السحابية",
-                    tint = if (isVaultProtected) EmeraldSuccess else IceSapphireGlow,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-            Surface(
-                shape = RoundedCornerShape(99.dp),
-                color = MidnightSurfaceHigh,
-                border = BorderStroke(1.dp, MidnightBorder),
-                modifier = Modifier
-                    .testTag("cloud_status_badge")
-                    .clickable { onCloudBadgeClick() }
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    val (badgeIcon, badgeColor) = when {
-                        offlineEngineMode -> Icons.Outlined.CloudOff to EmeraldSuccess
-                        appCheckStatus is AppCheckDiagnosticState.RateLimited -> Icons.Outlined.CloudOff to CoralError
-                        appCheckStatus is AppCheckDiagnosticState.AttentionNeeded -> Icons.Outlined.VerifiedUser to IceSapphireGlow
-                        else -> Icons.Outlined.CloudDone to EmeraldSuccess
-                    }
-                    Icon(
-                        imageVector = badgeIcon,
-                        contentDescription = stringResource(R.string.cloud_status_title),
-                        tint = badgeColor,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    val ver = stringResource(R.string.version_badge)
-                    Text(
-                        text = if (offlineEngineMode) "محلي مستقل • $ver" else stringResource(R.string.cloud_status_badge),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = SilverPure
-                    )
+                val (badgeIcon, badgeColor) = when {
+                    offlineEngineMode -> Icons.Outlined.CloudOff to EmeraldSuccess
+                    appCheckStatus is AppCheckDiagnosticState.RateLimited -> Icons.Outlined.CloudOff to CoralError
+                    appCheckStatus is AppCheckDiagnosticState.AttentionNeeded -> Icons.Outlined.VerifiedUser to IceSapphireGlow
+                    else -> Icons.Outlined.CloudDone to EmeraldSuccess
                 }
+                Icon(
+                    imageVector = badgeIcon,
+                    contentDescription = stringResource(R.string.cloud_status_title),
+                    tint = badgeColor,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                val ver = stringResource(R.string.version_badge)
+                Text(
+                    text = if (offlineEngineMode) "محلي مستقل • $ver" else stringResource(R.string.cloud_status_badge),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = SilverPure
+                )
             }
         }
     }
@@ -1128,7 +1007,7 @@ private fun ProjectHistoryCard(
                         color = SilverMuted
                     )
                 }
-                if (folderName != null || project.vaultSavedAt > 0L || project.cloudSyncedAt > 0L) {
+                if (folderName != null || project.archivedVideoUri.isNotBlank()) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1160,7 +1039,7 @@ private fun ProjectHistoryCard(
                                 }
                             }
                         }
-                        if (project.vaultSavedAt > 0L) {
+                        if (project.archivedVideoUri.isNotBlank()) {
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
                                 color = EmeraldSuccess.copy(alpha = 0.14f),
@@ -1172,41 +1051,15 @@ private fun ProjectHistoryCard(
                                     horizontalArrangement = Arrangement.spacedBy(3.dp)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Outlined.FolderSpecial,
+                                        imageVector = Icons.Outlined.OfflinePin,
                                         contentDescription = null,
                                         tint = EmeraldSuccess,
                                         modifier = Modifier.size(11.dp)
                                     )
                                     Text(
-                                        text = "محفوظ دائماً",
+                                        text = "محفوظ داخلياً",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = EmeraldSuccess,
-                                        maxLines = 1
-                                    )
-                                }
-                            }
-                        }
-                        if (project.cloudSyncedAt > 0L) {
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = IceSapphire.copy(alpha = 0.14f),
-                                border = BorderStroke(1.dp, IceSapphireGlow.copy(alpha = 0.4f))
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.CloudDone,
-                                        contentDescription = null,
-                                        tint = IceSapphireGlow,
-                                        modifier = Modifier.size(11.dp)
-                                    )
-                                    Text(
-                                        text = "سحابي",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = IceSapphireGlow,
                                         maxLines = 1
                                     )
                                 }
@@ -1255,7 +1108,7 @@ private fun ProjectHistoryCard(
                     )
                     DropdownMenuItem(
                         text = { Text("نقل إلى مجلد", color = SilverPure) },
-                        leadingIcon = { Icon(Icons.Outlined.DriveFileMove, contentDescription = null, tint = IceSapphireGlow) },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Outlined.DriveFileMove, contentDescription = null, tint = IceSapphireGlow) },
                         onClick = {
                             menuExpanded = false
                             onMoveToFolderClick()

@@ -1,7 +1,6 @@
 package com.example.ui
 
 import android.app.Application
-import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
@@ -39,6 +38,8 @@ import com.example.data.db.VideoProjectEntity
 import com.example.data.db.VoiceTranslationEntity
 import com.example.export.SubtitleParser
 import com.example.media.AudioExtractor
+import com.example.media.InternalMediaArchive
+import com.example.media.InternalStorageStats
 import com.example.media.LocalVideoFallbackException
 import com.example.media.MediaPreparationException
 import com.example.media.OfflineSpeechHelper
@@ -48,6 +49,7 @@ import com.example.media.VoskDownloadProgress
 import com.example.media.VoskLiveMicRecognizer
 import com.example.media.VoskModelDescriptor
 import com.example.media.VoskModelManager
+import com.example.media.formatByteSizeArabic
 import com.example.security.SecurityAuditReport
 import com.example.security.SecurityInspector
 import com.example.service.TranslationKeepAliveService
@@ -57,20 +59,10 @@ import com.example.study.StudyAiException
 import com.example.study.StudyAiPreferences
 import com.example.study.StudyAttachmentExtractor
 import com.example.study.parseStudyDossierJson
-import com.example.ui.components.VaultBackupUiState
-import com.example.vault.CloudSyncRepository
-import com.example.vault.GoogleSignInCancelledException
-import com.example.vault.GoogleSignInManager
-import com.example.vault.PermanentDeviceVaultManager
-import com.example.vault.VaultPreferences
-import com.example.vault.authStateFlow
-import com.google.firebase.Firebase
-import com.google.firebase.auth.auth
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -81,7 +73,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -179,22 +170,11 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         StudyAiAssistant()
     }
 
-    private val vaultPreferences: VaultPreferences by lazy {
-        VaultPreferences(getApplication())
+    private val internalMediaArchive: InternalMediaArchive by lazy {
+        InternalMediaArchive(getApplication())
     }
-
-    private val permanentVaultManager: PermanentDeviceVaultManager by lazy {
-        PermanentDeviceVaultManager(getApplication(), repository, vaultPreferences)
-    }
-
-    private val cloudSyncRepository: CloudSyncRepository by lazy {
-        CloudSyncRepository(getApplication())
-    }
-
-    private val firebaseAuth by lazy { Firebase.auth }
 
     private var activeOfflineVoskMic = false
-    private var autoRestoreChecked = false
 
     val securityReport: SecurityAuditReport by lazy {
         SecurityInspector.inspectApp(getApplication())
@@ -380,74 +360,41 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
     private val _reTranslateError = MutableStateFlow<String?>(null)
     private val _reTranslateNotice = MutableStateFlow<String?>(null)
 
-    private val _vaultUiState = MutableStateFlow(VaultBackupUiState())
-    val vaultUiState: StateFlow<VaultBackupUiState> = _vaultUiState.asStateFlow()
+    private val _storageStats = MutableStateFlow(InternalStorageStats())
+    val storageStats: StateFlow<InternalStorageStats> = _storageStats.asStateFlow()
+
+    private val _storageNotice = MutableStateFlow<String?>(null)
+    val storageNotice: StateFlow<String?> = _storageNotice.asStateFlow()
 
     private var processingJob: Job? = null
     private var recordingMeterJob: Job? = null
     private var voiceProcessingJob: Job? = null
-    private var authObserverJob: Job? = null
 
     init {
         refreshOfflinePacks()
-        initializeVaultAndAuthSync()
+        refreshStorageStats()
     }
 
-    private fun initializeVaultAndAuthSync() {
+    fun refreshStorageStats() {
         viewModelScope.launch {
-            vaultPreferences.state.collect { prefsState ->
-                _vaultUiState.update { it.copy(settings = prefsState) }
-            }
-        }
-
-        authObserverJob = viewModelScope.launch {
-            firebaseAuth.authStateFlow().collect { user ->
-                _vaultUiState.update {
-                    it.copy(signedInUser = GoogleSignInManager.toSignedInAccountInfo(user))
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            GoogleSignInManager.attemptSilentSignIn(getApplication())
-            attemptReinstallAutoRestoreIfEmpty()
+            _storageStats.value = internalMediaArchive.inspectStorageStats()
         }
     }
 
-    private suspend fun attemptReinstallAutoRestoreIfEmpty() {
-        if (autoRestoreChecked) return
-        autoRestoreChecked = true
-        val existingSnapshot = repository.getFullBackupSnapshot()
-        val isDbEmpty = existingSnapshot.projects.isEmpty() &&
-            existingSnapshot.studyNotebooks.isEmpty() &&
-            existingSnapshot.voiceTranslations.isEmpty()
-        if (!isDbEmpty) return
-
-        val prefs = vaultPreferences.currentState()
-        if (prefs.isVaultConfigured) {
-            permanentVaultManager.restoreFromVault().onSuccess { summary ->
-                if (summary.totalRestoredItems > 0) {
-                    _vaultUiState.update {
-                        it.copy(
-                            statusMessage = "تمت الاستعادة التلقائية من مجلد الجهاز: ${summary.videosRestored} فيديو و ${summary.studyNotebooksRestored} ملخص دراسة."
-                        )
-                    }
-                }
+    fun clearTempCache() {
+        viewModelScope.launch {
+            val freed = internalMediaArchive.clearTempCache()
+            _storageStats.value = internalMediaArchive.inspectStorageStats()
+            _storageNotice.value = if (freed > 0L) {
+                "تم تنظيف الكاش المؤقت (${formatByteSizeArabic(freed)})."
+            } else {
+                "الكاش المؤقت فارغ بالفعل."
             }
         }
+    }
 
-        if (firebaseAuth.currentUser != null) {
-            cloudSyncRepository.restoreAllFromCloud(repository).onSuccess { cloudSummary ->
-                if (cloudSummary.totalRestored > 0) {
-                    vaultPreferences.markCloudSynced()
-                    _vaultUiState.update {
-                        it.copy(
-                            statusMessage = "تمت المزامنة التلقائية من حساب Google: ${cloudSummary.videosRestored} فيديو و ${cloudSummary.studyNotebooksRestored} ملخص دراسة."
-                        )
-                    }
-                }
-            }
-        }
+    fun dismissStorageNotice() {
+        _storageNotice.value = null
     }
 
     fun setSourceLanguage(language: LanguageOption) {
@@ -609,7 +556,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                         result = localResult,
                         folderId = _selectedFolderId.value
                     )
-                    triggerAutoBackupProject(savedId)
+                    archiveVideoInternally(savedId, uri)
                     _processingState.value = ProcessingUiState.Idle
                     onCompleted(savedId)
                     return@launch
@@ -761,7 +708,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     result = mergedResult,
                     folderId = _selectedFolderId.value
                 )
-                triggerAutoBackupProject(savedProjectId)
+                archiveVideoInternally(savedProjectId, uri)
 
                 _processingState.value = ProcessingUiState.Idle
                 onCompleted(savedProjectId)
@@ -964,7 +911,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     result = result,
                     folderId = _selectedFolderId.value
                 )
-                triggerAutoBackupProject(savedId)
                 _processingState.value = ProcessingUiState.Idle
                 onCompleted(savedId)
             } catch (e: CancellationException) {
@@ -1092,7 +1038,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                             translatedText = offlineRes.translatedText
                         )
                     )
-                    triggerAutoBackupVoiceHistory()
                     _voiceUiState.value = VoiceUiState.Idle
                 } catch (e: CancellationException) {
                     _voiceUiState.value = VoiceUiState.Idle
@@ -1189,7 +1134,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     personalApiKey = activePersonalKeyForTranslation()
                 )
                 repository.saveVoiceTranslation(chosenTarget, result)
-                triggerAutoBackupVoiceHistory()
                 _voiceUiState.value = VoiceUiState.Idle
             } catch (e: CancellationException) {
                 _voiceUiState.value = VoiceUiState.Idle
@@ -1269,7 +1213,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                         _voiceNotice.value = "تمت الترجمة تلقائياً بالمحرك المحلي المستقل (بدون الاعتماد على السحابة)."
                     }
                 }
-                triggerAutoBackupVoiceHistory()
                 _voiceUiState.value = VoiceUiState.Idle
             } catch (e: CancellationException) {
                 _voiceUiState.value = VoiceUiState.Idle
@@ -1307,7 +1250,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val newId = repository.createFolder(clean, accentKey)
             _selectedFolderId.value = newId
-            triggerAutoBackupFolders()
         }
     }
 
@@ -1316,7 +1258,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         if (clean.isEmpty()) return
         viewModelScope.launch {
             repository.renameFolder(folderId, clean, accentKey)
-            triggerAutoBackupFolders()
         }
     }
 
@@ -1326,7 +1267,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                 _selectedFolderId.value = null
             }
             repository.deleteFolder(folderId)
-            triggerAutoBackupFolders()
         }
     }
 
@@ -1335,20 +1275,23 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         if (clean.isEmpty()) return
         viewModelScope.launch {
             repository.renameProject(projectId, clean)
-            triggerAutoBackupProject(projectId)
         }
     }
 
     fun moveProjectToFolder(projectId: Long, folderId: Long?) {
         viewModelScope.launch {
             repository.moveProjectToFolder(projectId, folderId)
-            triggerAutoBackupProject(projectId)
         }
     }
 
     fun deleteProject(projectId: Long) {
         viewModelScope.launch {
+            val existing = repository.getProject(projectId)
+            if (existing != null && existing.archivedVideoUri.isNotBlank()) {
+                internalMediaArchive.deleteArchivedVideo(existing.archivedVideoUri)
+            }
             repository.deleteProject(projectId)
+            refreshStorageStats()
         }
     }
 
@@ -1480,7 +1423,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     extractedText = transcript.take(24_000)
                 )
             )
-            triggerAutoBackupStudy(newId)
             _activeStudyNotebookId.value = newId
         }
     }
@@ -1496,7 +1438,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         if (clean.isEmpty()) return
         viewModelScope.launch {
             repository.updateStudyNotebookConfig(notebookId, clean, method, dailyMinutes, totalDays)
-            triggerAutoBackupStudy(notebookId)
         }
     }
 
@@ -1506,10 +1447,13 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
             atts.forEach { studyExtractor.deleteLocalFileIfExists(it.localFilePath) }
             val visuals = repository.getStudyVisuals(notebookId)
             visuals.forEach { studyExtractor.deleteLocalFileIfExists(it.localImagePath) }
+            val msgs = repository.getStudyMessages(notebookId)
+            msgs.forEach { studyExtractor.deleteLocalFileIfExists(it.attachmentPath) }
             if (_activeStudyNotebookId.value == notebookId) {
                 _activeStudyNotebookId.value = null
             }
             repository.deleteStudyNotebook(notebookId)
+            refreshStorageStats()
         }
     }
 
@@ -1530,7 +1474,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                         extractedText = ingested.extractedText
                     )
                 )
-                triggerAutoBackupStudy(notebookId)
+                refreshStorageStats()
                 _studyNotice.value = "تم إرفاق «${ingested.displayName}» بنجاح."
             } catch (e: CancellationException) {
                 throw e
@@ -1560,7 +1504,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                         extractedText = ingested.extractedText
                     )
                 )
-                triggerAutoBackupStudy(notebookId)
+                refreshStorageStats()
                 _studyNotice.value = "تمت إضافة صورة الدرس «${ingested.displayName}»."
             } catch (e: CancellationException) {
                 throw e
@@ -1591,7 +1535,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     extractedText = ingested.extractedText
                 )
             )
-            triggerAutoBackupStudy(notebookId)
+            refreshStorageStats()
             _studyNotice.value = "تم حفظ الملاحظة الدراسية «${ingested.displayName}»."
         }
     }
@@ -1619,7 +1563,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     extractedText = transcript.take(24_000)
                 )
             )
-            triggerAutoBackupStudy(notebookId)
             _studyNotice.value = "تم ربط نص الفيديو «${project.title}» بالمادة."
         }
     }
@@ -1628,6 +1571,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             studyExtractor.deleteLocalFileIfExists(attachment.localFilePath)
             repository.deleteStudyAttachment(attachment.id)
+            refreshStorageStats()
         }
     }
 
@@ -1674,7 +1618,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     explicitOfflineOnly = _offlineEngineMode.value
                 )
                 repository.saveGeneratedStudyPlan(notebookId, plan)
-                triggerAutoBackupStudy(notebookId)
                 _studyNotice.value = if (plan.isOfflineFallback) {
                     "تم إنشاء الملخص والجدول محلياً على جهازك (وضع أوفلاين المفعّل)."
                 } else {
@@ -1741,7 +1684,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                         engineLabel = generated.engineLabel
                     )
                 )
-                triggerAutoBackupStudy(notebookId)
+                refreshStorageStats()
                 _studyNotice.value = "تم توليد «${style.arabicLabel}» وحفظه في معرض المادة."
             } catch (e: CancellationException) {
                 throw e
@@ -1776,6 +1719,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             studyExtractor.deleteLocalFileIfExists(visual.localImagePath)
             repository.deleteStudyVisual(visual.id)
+            refreshStorageStats()
         }
     }
 
@@ -1811,8 +1755,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleStudyScheduleTask(itemId: Long, completed: Boolean) {
         viewModelScope.launch {
-            val nbId = repository.toggleScheduleItemCompleted(itemId, completed)
-            if (nbId != null) triggerAutoBackupStudy(nbId)
+            repository.toggleScheduleItemCompleted(itemId, completed)
         }
     }
 
@@ -1869,7 +1812,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     text = result.fullText,
                     isOfflineGenerated = result.isOffline
                 )
-                triggerAutoBackupStudy(notebookId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: StudyAiException) {
@@ -1978,8 +1920,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateCueText(cueId: Long, originalText: String, translatedText: String) {
         viewModelScope.launch {
-            val projId = repository.updateCueText(cueId, originalText.trim(), translatedText.trim())
-            if (projId != null) triggerAutoBackupProject(projId)
+            repository.updateCueText(cueId, originalText.trim(), translatedText.trim())
         }
     }
 
@@ -1992,7 +1933,7 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             repository.updateProjectVideoUri(projectId, uri.toString())
-            triggerAutoBackupProject(projectId)
+            archiveVideoInternally(projectId, uri)
         }
     }
 
@@ -2049,7 +1990,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     summary = summary,
                     translationsByCueId = translatedMap!!
                 )
-                triggerAutoBackupProject(projectId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -2086,7 +2026,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
                     summary = newSummary.ifBlank { project.summary },
                     translationsByCueId = polishedMap
                 )
-                triggerAutoBackupProject(projectId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -2106,281 +2045,13 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         _reTranslateNotice.value = null
     }
 
-    // --- Permanent Device Vault & Cloud Sync Actions ---
-    fun onVaultFolderPicked(treeUri: Uri, runBackupOrRestoreIfEmpty: Boolean = true) {
-        viewModelScope.launch {
-            _vaultUiState.update { it.copy(errorMessage = null, statusMessage = null) }
-            val folderLabel = permanentVaultManager.registerPickedVaultFolder(treeUri)
-            if (runBackupOrRestoreIfEmpty) {
-                val snapshot = repository.getFullBackupSnapshot()
-                val isLocalEmpty = snapshot.projects.isEmpty() &&
-                    snapshot.studyNotebooks.isEmpty() &&
-                    snapshot.voiceTranslations.isEmpty()
-                if (isLocalEmpty) {
-                    restoreFromDeviceVault(treeUri)
-                } else {
-                    _vaultUiState.update { it.copy(isBackingUp = true, busyLabel = "جاري حفظ بياناتك في $folderLabel…") }
-                    val res = permanentVaultManager.backupAll()
-                    res.onSuccess { summary ->
-                        _vaultUiState.update {
-                            it.copy(
-                                isBackingUp = false,
-                                busyLabel = null,
-                                statusMessage = "تم الحفظ الدائم في $folderLabel (${summary.videosSaved} فيديو، ${summary.studyNotebooksSaved} ملخص دراسة)."
-                            )
-                        }
-                    }.onFailure { err ->
-                        _vaultUiState.update {
-                            it.copy(
-                                isBackingUp = false,
-                                busyLabel = null,
-                                errorMessage = err.localizedMessage ?: "تعذر الكتابة إلى المجلد المختار."
-                            )
-                        }
-                    }
-                }
-            } else {
-                _vaultUiState.update {
-                    it.copy(statusMessage = "تم ربط المجلد الدائم: $folderLabel")
-                }
-            }
-        }
-    }
-
-    fun setVaultAutoSave(enabled: Boolean) {
-        vaultPreferences.setAutoSaveEnabled(enabled)
-    }
-
-    fun setVaultIncludeVideoCopy(enabled: Boolean) {
-        vaultPreferences.setIncludeVideoCopy(enabled)
-    }
-
-    fun backupAllToDeviceVault() {
-        if (_vaultUiState.value.isBackingUp || _vaultUiState.value.isRestoring) return
-        viewModelScope.launch {
-            _vaultUiState.update {
-                it.copy(isBackingUp = true, busyLabel = "جاري نسخ الفيديوهات والملخصات إلى المجلد الدائم…", statusMessage = null, errorMessage = null)
-            }
-            val result = permanentVaultManager.backupAll()
-            result.onSuccess { s ->
-                _vaultUiState.update {
-                    it.copy(
-                        isBackingUp = false,
-                        busyLabel = null,
-                        statusMessage = "تم حفظ ${s.videosSaved} فيديو (${s.videoFilesCopied} نسخة فيديو جديدة)، و${s.studyNotebooksSaved} مادة دراسة (${s.visualsCopied} صورة جديدة)."
-                    )
-                }
-            }.onFailure { err ->
-                _vaultUiState.update {
-                    it.copy(
-                        isBackingUp = false,
-                        busyLabel = null,
-                        errorMessage = err.localizedMessage ?: "تعذر النسخ الاحتياطي للمجلد."
-                    )
-                }
-            }
-        }
-    }
-
-    fun restoreFromDeviceVault(explicitTreeUri: Uri? = null) {
-        if (_vaultUiState.value.isBackingUp || _vaultUiState.value.isRestoring) return
-        viewModelScope.launch {
-            _vaultUiState.update {
-                it.copy(isRestoring = true, busyLabel = "جاري استعادة الفيديوهات والملخصات من الجهاز…", statusMessage = null, errorMessage = null)
-            }
-            val result = permanentVaultManager.restoreFromVault(explicitTreeUri)
-            result.onSuccess { s ->
-                _vaultUiState.update {
-                    it.copy(
-                        isRestoring = false,
-                        busyLabel = null,
-                        statusMessage = if (s.totalRestoredItems == 0) {
-                            "تم فحص المجلد الدائم ولم يتم العثور على عناصر جديدة للاستعادة."
-                        } else {
-                            "تمت الاستعادة بنجاح: ${s.videosRestored} فيديو (${s.videoFilesRelinked} مرتبطة بالملف)، و${s.studyNotebooksRestored} ملخص دراسة (${s.visualsRestored} صورة)."
-                        }
-                    )
-                }
-            }.onFailure { err ->
-                _vaultUiState.update {
-                    it.copy(
-                        isRestoring = false,
-                        busyLabel = null,
-                        errorMessage = err.localizedMessage ?: "تعذرت الاستعادة من المجلد."
-                    )
-                }
-            }
-        }
-    }
-
-    fun signInWithGoogle(activityContext: Context, autoSyncOrRestore: Boolean = true) {
-        if (_vaultUiState.value.isSigningIn) return
-        viewModelScope.launch {
-            _vaultUiState.update {
-                it.copy(isSigningIn = true, busyLabel = "جاري تسجيل الدخول بحساب Google…", statusMessage = null, errorMessage = null)
-            }
-            val res = GoogleSignInManager.signInInteractive(activityContext, firebaseAuth)
-            res.onSuccess { account ->
-                _vaultUiState.update {
-                    it.copy(
-                        isSigningIn = false,
-                        busyLabel = null,
-                        signedInUser = account,
-                        statusMessage = "تم تسجيل الدخول: ${account.email.ifBlank { account.displayName }}"
-                    )
-                }
-                if (autoSyncOrRestore) {
-                    val snap = repository.getFullBackupSnapshot()
-                    val isLocalEmpty = snap.projects.isEmpty() && snap.studyNotebooks.isEmpty() && snap.voiceTranslations.isEmpty()
-                    if (isLocalEmpty) {
-                        restoreFromCloud()
-                    } else {
-                        syncAllToCloud()
-                    }
-                }
-            }.onFailure { err ->
-                val message = if (err is GoogleSignInCancelledException) null else (err.localizedMessage ?: "تعذر تسجيل الدخول.")
-                _vaultUiState.update {
-                    it.copy(isSigningIn = false, busyLabel = null, errorMessage = message)
-                }
-            }
-        }
-    }
-
-    fun signOutGoogle(context: Context) {
-        viewModelScope.launch {
-            GoogleSignInManager.signOut(
-                context = context,
-                auth = firebaseAuth,
-                beforeAuthSignOut = {
-                    withContext(NonCancellable) {
-                        _vaultUiState.update {
-                            it.copy(statusMessage = "تم تسجيل الخروج من السحابة.")
-                        }
-                    }
-                }
-            )
-        }
-    }
-
-    fun syncAllToCloud() {
-        if (_vaultUiState.value.isBackingUp || _vaultUiState.value.isRestoring) return
-        viewModelScope.launch {
-            _vaultUiState.update {
-                it.copy(isBackingUp = true, busyLabel = "جاري المزامنة والرفع إلى السحابة…", statusMessage = null, errorMessage = null)
-            }
-            val snapshot = repository.getFullBackupSnapshot()
-            val res = cloudSyncRepository.uploadFullSnapshot(snapshot, repository)
-            res.onSuccess { count ->
-                vaultPreferences.markCloudSynced()
-                _vaultUiState.update {
-                    it.copy(
-                        isBackingUp = false,
-                        busyLabel = null,
-                        statusMessage = "تمت مزامنة $count عنصر بأمان إلى حسابك السحابي."
-                    )
-                }
-            }.onFailure { err ->
-                _vaultUiState.update {
-                    it.copy(
-                        isBackingUp = false,
-                        busyLabel = null,
-                        errorMessage = err.localizedMessage ?: "تعذرت المزامنة السحابية."
-                    )
-                }
-            }
-        }
-    }
-
-    fun restoreFromCloud() {
-        if (_vaultUiState.value.isBackingUp || _vaultUiState.value.isRestoring) return
-        viewModelScope.launch {
-            _vaultUiState.update {
-                it.copy(isRestoring = true, busyLabel = "جاري استعادة بياناتك من السحابة…", statusMessage = null, errorMessage = null)
-            }
-            val res = cloudSyncRepository.restoreAllFromCloud(repository)
-            res.onSuccess { s ->
-                vaultPreferences.markCloudSynced()
-                _vaultUiState.update {
-                    it.copy(
-                        isRestoring = false,
-                        busyLabel = null,
-                        statusMessage = if (s.totalRestored == 0) {
-                            "حسابك السحابي جاهز ولا توجد عناصر سابقة للاستعادة."
-                        } else {
-                            "تمت الاستعادة من السحابة: ${s.videosRestored} فيديو، ${s.studyNotebooksRestored} مادة دراسة، ${s.voiceEntriesRestored} ترجمة فورية."
-                        }
-                    )
-                }
-            }.onFailure { err ->
-                _vaultUiState.update {
-                    it.copy(
-                        isRestoring = false,
-                        busyLabel = null,
-                        errorMessage = err.localizedMessage ?: "تعذرت الاستعادة من السحابة."
-                    )
-                }
-            }
-        }
-    }
-
-    fun dismissVaultStatus() {
-        _vaultUiState.update { it.copy(statusMessage = null, errorMessage = null) }
-    }
-
-    fun dismissVaultBanner() {
-        _vaultUiState.update { it.copy(bannerDismissed = true) }
-    }
-
-    private fun triggerAutoBackupProject(projectId: Long) {
+    private fun archiveVideoInternally(projectId: Long, sourceUri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
-            if (vaultPreferences.currentState().autoSaveEnabled) {
-                permanentVaultManager.autoSaveSingleProject(projectId)
+            val archived = internalMediaArchive.archiveVideoCopy(projectId, sourceUri)
+            if (archived.isNotBlank()) {
+                repository.updateProjectArchivedVideoUri(projectId, archived)
             }
-            if (firebaseAuth.currentUser != null && !_offlineEngineMode.value) {
-                repository.getProjectBackupBundle(projectId)?.let { bundle ->
-                    cloudSyncRepository.uploadSingleProject(bundle, repository)
-                }
-            }
-        }
-    }
-
-    private fun triggerAutoBackupStudy(notebookId: Long) {
-        viewModelScope.launch(Dispatchers.IO) {
-            if (vaultPreferences.currentState().autoSaveEnabled) {
-                permanentVaultManager.autoSaveSingleStudyNotebook(notebookId)
-            }
-            if (firebaseAuth.currentUser != null && !_offlineEngineMode.value) {
-                repository.getStudyBackupBundle(notebookId)?.let { bundle ->
-                    cloudSyncRepository.uploadSingleStudyNotebook(bundle, repository)
-                }
-            }
-        }
-    }
-
-    private fun triggerAutoBackupVoiceHistory() {
-        viewModelScope.launch(Dispatchers.IO) {
-            if (vaultPreferences.currentState().autoSaveEnabled) {
-                permanentVaultManager.autoSaveVoiceHistory()
-            }
-            if (firebaseAuth.currentUser != null && !_offlineEngineMode.value) {
-                val latest = repository.getFullBackupSnapshot().voiceTranslations.firstOrNull()
-                if (latest != null) {
-                    cloudSyncRepository.uploadVoiceTranslation(latest)
-                }
-            }
-        }
-    }
-
-    private fun triggerAutoBackupFolders() {
-        viewModelScope.launch(Dispatchers.IO) {
-            if (vaultPreferences.currentState().autoSaveEnabled) {
-                permanentVaultManager.autoSaveFoldersManifest()
-            }
-            if (firebaseAuth.currentUser != null && !_offlineEngineMode.value) {
-                val folders = repository.getFullBackupSnapshot().folders
-                folders.forEach { cloudSyncRepository.uploadFolder(it) }
-            }
+            _storageStats.value = internalMediaArchive.inspectStorageStats()
         }
     }
 
@@ -2395,7 +2066,6 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        authObserverJob?.cancel()
         recordingMeterJob?.cancel()
         voiceRecorder.stopAndCleanupOnly()
         offlineSpeechHelper.stopAndDestroy()

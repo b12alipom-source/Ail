@@ -26,7 +26,9 @@ import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.DownloadForOffline
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Security
@@ -68,8 +70,10 @@ import com.example.R
 import com.example.ai.AppCheckDiagnosticState
 import kotlinx.coroutines.delay
 import com.example.data.SupportedLanguages
+import com.example.media.InternalStorageStats
 import com.example.media.VoskDownloadProgress
 import com.example.media.VoskModelDescriptor
+import com.example.media.formatByteSizeArabic
 import com.example.security.SecurityAuditReport
 import com.example.ui.theme.CoralError
 import com.example.ui.theme.EmeraldSuccess
@@ -99,18 +103,10 @@ fun CloudAndApkSheet(
     voskDownloadProgress: VoskDownloadProgress?,
     voskActionError: String?,
     securityReport: SecurityAuditReport,
-    vaultState: VaultBackupUiState,
-    onPickVaultFolder: () -> Unit,
-    onPickFolderAndRestore: () -> Unit,
-    onToggleAutoSave: (Boolean) -> Unit,
-    onToggleIncludeVideoCopy: (Boolean) -> Unit,
-    onBackupNowToVault: () -> Unit,
-    onRestoreNowFromVault: () -> Unit,
-    onSignInWithGoogle: () -> Unit,
-    onSignOutGoogle: () -> Unit,
-    onSyncNowToCloud: () -> Unit,
-    onRestoreNowFromCloud: () -> Unit,
-    onDismissVaultStatus: () -> Unit,
+    storageStats: InternalStorageStats,
+    storageNotice: String?,
+    onClearTempCache: () -> Unit,
+    onDismissStorageNotice: () -> Unit,
     onToggleOfflineMode: (Boolean) -> Unit,
     onRunAppCheckDiagnostics: () -> Unit,
     onDownloadPack: (String) -> Unit,
@@ -145,21 +141,109 @@ fun CloudAndApkSheet(
                 color = SilverPure
             )
 
-            // 0. Permanent Device Vault & Google Cloud Sync
-            PermanentVaultAndSyncSection(
-                vaultState = vaultState,
-                onPickVaultFolder = onPickVaultFolder,
-                onPickFolderAndRestore = onPickFolderAndRestore,
-                onToggleAutoSave = onToggleAutoSave,
-                onToggleIncludeVideoCopy = onToggleIncludeVideoCopy,
-                onBackupNowToVault = onBackupNowToVault,
-                onRestoreNowFromVault = onRestoreNowFromVault,
-                onSignInWithGoogle = onSignInWithGoogle,
-                onSignOutGoogle = onSignOutGoogle,
-                onSyncNowToCloud = onSyncNowToCloud,
-                onRestoreNowFromCloud = onRestoreNowFromCloud,
-                onDismissStatus = onDismissVaultStatus
-            )
+            // 0. Internal App Storage & Cache Summary
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MidnightSurfaceHigh,
+                border = BorderStroke(1.dp, MidnightBorderSubtle),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Outlined.Folder,
+                                contentDescription = null,
+                                tint = IceSapphireGlow,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "التخزين الداخلي للتطبيق",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = SilverPure
+                            )
+                        }
+                        Text(
+                            text = formatByteSizeArabic(storageStats.totalBytes),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = IceSapphireGlow,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Text(
+                        text = "تحفظ الفيديوهات المترجمة وملخصاتك ومرفقات الدراسة محلياً داخل التطبيق فقط دون أي مجلدات خارجية أو حسابات سحابية.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SilverMetallic
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MidnightNavy,
+                        border = BorderStroke(1.dp, MidnightBorderSubtle),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            StorageStatRow(
+                                label = "نسخ الفيديو المحفوظة (${storageStats.savedVideosCount})",
+                                value = formatByteSizeArabic(storageStats.savedVideosBytes)
+                            )
+                            StorageStatRow(
+                                label = "ملفات الدراسة والصور",
+                                value = formatByteSizeArabic(storageStats.studyAssetsBytes)
+                            )
+                            StorageStatRow(
+                                label = "ملفات الكاش المؤقتة",
+                                value = formatByteSizeArabic(storageStats.tempCacheBytes)
+                            )
+                        }
+                    }
+
+                    storageNotice?.let { note ->
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = EmeraldSuccess.copy(alpha = 0.14f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onDismissStorageNotice() }
+                        ) {
+                            Text(
+                                text = note,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = EmeraldSuccess,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = onClearTempCache,
+                        border = BorderStroke(1.dp, MidnightBorder),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("clear_temp_cache_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.DeleteSweep,
+                            contentDescription = null,
+                            tint = IceSapphireGlow,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("تنظيف الكاش المؤقت", color = SilverPure)
+                    }
+                }
+            }
 
             // 1. Standalone Offline Engine Toggle
             Surface(
@@ -727,6 +811,27 @@ private fun SecurityBadgeRow(label: String, ok: Boolean) {
             text = label,
             style = MaterialTheme.typography.labelMedium,
             color = SilverPure
+        )
+    }
+}
+
+@Composable
+private fun StorageStatRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = SilverMetallic
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelMedium,
+            color = SilverPure,
+            fontWeight = FontWeight.SemiBold
         )
     }
 }

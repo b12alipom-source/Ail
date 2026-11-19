@@ -28,14 +28,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Notes
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
-import androidx.compose.material.icons.outlined.Backup
-import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.DeleteOutline
-import androidx.compose.material.icons.outlined.FolderSpecial
 import androidx.compose.material.icons.outlined.Image
-import androidx.compose.material.icons.outlined.Notes
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Tune
@@ -85,9 +82,6 @@ import com.example.data.db.StudyVisualEntity
 import com.example.study.IngestedAttachment
 import com.example.study.parseStudyDossierJson
 import com.example.ui.BayanViewModel
-import com.example.ui.components.PermanentVaultAndSyncSheet
-import com.example.ui.components.ReinstallRecoveryBanner
-import com.example.ui.components.findActivityOrNull
 import com.example.ui.theme.CoralError
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.IceSapphire
@@ -137,7 +131,6 @@ fun StudyScreen(
     val appCheckState by viewModel.appCheckStatus.collectAsStateWithLifecycle()
     val isCheckingAppCheck by viewModel.isCheckingAppCheck.collectAsStateWithLifecycle()
     val personalKeyVerifyState by viewModel.personalKeyVerifyState.collectAsStateWithLifecycle()
-    val vaultState by viewModel.vaultUiState.collectAsStateWithLifecycle()
 
     LaunchedEffect(notebooks, activeNotebookId) {
         if (activeNotebookId == null && notebooks.isNotEmpty()) {
@@ -159,7 +152,6 @@ fun StudyScreen(
     var showAddTextNoteDialog by remember { mutableStateOf(false) }
     var showLinkVideoSheet by remember { mutableStateOf(false) }
     var showEngineSettingsSheet by remember { mutableStateOf(false) }
-    var showVaultSyncSheet by remember { mutableStateOf(false) }
     var notebookPendingDelete by remember { mutableStateOf<StudyNotebookEntity?>(null) }
 
     val documentPickerLauncher = rememberLauncherForActivityResult(
@@ -184,23 +176,6 @@ fun StudyScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) viewModel.attachChatMediaUri(uri)
-    }
-
-    val vaultSetupLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri != null) viewModel.onVaultFolderPicked(uri, runBackupOrRestoreIfEmpty = true)
-    }
-
-    val vaultRestoreLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri != null) viewModel.restoreFromDeviceVault(uri)
-    }
-
-    val signInAndSyncCloud: () -> Unit = {
-        val activityCtx = context.findActivityOrNull() ?: context
-        viewModel.signInWithGoogle(activityCtx, autoSyncOrRestore = true)
     }
 
     val shareImagePath: (String, String) -> Unit = { localPath, title ->
@@ -291,22 +266,7 @@ fun StudyScreen(
                     }
                 }
 
-                val isVaultProtected = vaultState.settings.isVaultConfigured || vaultState.signedInUser != null
-                IconButton(
-                    onClick = { showVaultSyncSheet = true },
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("study_backup_sync_button")
-                ) {
-                    Icon(
-                        imageVector = if (isVaultProtected) Icons.Outlined.CloudDone else Icons.Outlined.Backup,
-                        contentDescription = "الحفظ الدائم والمزامنة السحابية",
-                        tint = if (isVaultProtected) EmeraldSuccess else IceSapphireGlow,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(4.dp))
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Surface(
                     shape = RoundedCornerShape(99.dp),
@@ -442,60 +402,14 @@ fun StudyScreen(
                 }
             }
 
-            if (!showVaultSyncSheet && (vaultState.statusMessage != null || vaultState.errorMessage != null)) {
-                val isErr = vaultState.errorMessage != null
-                Surface(
-                    color = if (isErr) CoralError.copy(alpha = 0.14f) else EmeraldSuccess.copy(alpha = 0.14f),
-                    border = BorderStroke(
-                        1.dp,
-                        if (isErr) CoralError.copy(alpha = 0.45f) else EmeraldSuccess.copy(alpha = 0.45f)
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 4.dp),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = vaultState.errorMessage ?: vaultState.statusMessage.orEmpty(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = SilverPure,
-                            modifier = Modifier.weight(1f)
-                        )
-                        TextButton(onClick = { viewModel.dismissVaultStatus() }) {
-                            Text("حسناً", color = if (isErr) CoralError else EmeraldSuccess)
-                        }
-                    }
-                }
-            }
-
             if (activeNotebook == null) {
-                Column(
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .verticalScroll(rememberScrollState())
                         .padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    contentAlignment = Alignment.Center
                 ) {
-                    ReinstallRecoveryBanner(
-                        isLocalLibraryEmpty = projects.isEmpty() && notebooks.isEmpty(),
-                        vaultState = vaultState,
-                        onPickVaultFolderForSetup = { vaultSetupLauncher.launch(null) },
-                        onPickVaultFolderForRestore = { vaultRestoreLauncher.launch(null) },
-                        onSignInAndRestoreCloud = {
-                            if (vaultState.signedInUser != null) {
-                                viewModel.restoreFromCloud()
-                            } else {
-                                signInAndSyncCloud()
-                            }
-                        },
-                        onOpenFullBackupSheet = { showVaultSyncSheet = true },
-                        onDismiss = { viewModel.dismissVaultBanner() }
-                    )
-
                     EmptyStudyOnboarding(
                         projectsCount = projects.size,
                         firstProjectTitle = projects.firstOrNull()?.title,
@@ -522,7 +436,6 @@ fun StudyScreen(
                     pendingChatAttachment = pendingChatAttachment,
                     activeTab = activeTab,
                     onSelectTab = { activeTab = it },
-                    onOpenBackupSync = { showVaultSyncSheet = true },
                     onPickDocument = { documentPickerLauncher.launch(arrayOf("application/pdf", "text/*")) },
                     onPickPhoto = { photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     onOpenAddTextNote = { showAddTextNoteDialog = true },
@@ -553,24 +466,6 @@ fun StudyScreen(
                 )
             }
         }
-    }
-
-    if (showVaultSyncSheet) {
-        PermanentVaultAndSyncSheet(
-            vaultState = vaultState,
-            onPickVaultFolder = { vaultSetupLauncher.launch(null) },
-            onPickFolderAndRestore = { vaultRestoreLauncher.launch(null) },
-            onToggleAutoSave = { viewModel.setVaultAutoSave(it) },
-            onToggleIncludeVideoCopy = { viewModel.setVaultIncludeVideoCopy(it) },
-            onBackupNowToVault = { viewModel.backupAllToDeviceVault() },
-            onRestoreNowFromVault = { viewModel.restoreFromDeviceVault() },
-            onSignInWithGoogle = signInAndSyncCloud,
-            onSignOutGoogle = { viewModel.signOutGoogle(context) },
-            onSyncNowToCloud = { viewModel.syncAllToCloud() },
-            onRestoreNowFromCloud = { viewModel.restoreFromCloud() },
-            onDismissStatus = { viewModel.dismissVaultStatus() },
-            onDismiss = { showVaultSyncSheet = false }
-        )
     }
 
     if (showEngineSettingsSheet) {
@@ -727,7 +622,6 @@ private fun ActiveNotebookWorkspace(
     pendingChatAttachment: IngestedAttachment?,
     activeTab: StudyWorkspaceTab,
     onSelectTab: (StudyWorkspaceTab) -> Unit,
-    onOpenBackupSync: () -> Unit,
     onPickDocument: () -> Unit,
     onPickPhoto: () -> Unit,
     onOpenAddTextNote: () -> Unit,
@@ -778,36 +672,11 @@ private fun ActiveNotebookWorkspace(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("1. مرفقات المادة (${attachments.size})", style = MaterialTheme.typography.titleSmall, color = SilverPure)
-                        val isSaved = notebook.vaultSavedAt > 0L || notebook.cloudSyncedAt > 0L
-                        Surface(
-                            shape = RoundedCornerShape(99.dp),
-                            color = if (isSaved) EmeraldSuccess.copy(alpha = 0.14f) else MidnightNavy,
-                            border = BorderStroke(
-                                1.dp,
-                                if (isSaved) EmeraldSuccess.copy(alpha = 0.45f) else MidnightBorderSubtle
-                            ),
-                            modifier = Modifier
-                                .testTag("study_notebook_backup_pill")
-                                .clickable { onOpenBackupSync() }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (isSaved) Icons.Outlined.FolderSpecial else Icons.Outlined.Backup,
-                                    contentDescription = "حالة الحفظ الدائم للمادة",
-                                    tint = if (isSaved) EmeraldSuccess else IceSapphireGlow,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Text(
-                                    text = if (isSaved) "محفوظ تلقائياً ✓" else "تفعيل الحفظ الدائم",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (isSaved) EmeraldSuccess else SilverMetallic
-                                )
-                            }
-                        }
+                        Text(
+                            text = "محفوظ تلقائياً في التطبيق",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = EmeraldSuccess
+                        )
                     }
 
                     Row(
@@ -818,7 +687,7 @@ private fun ActiveNotebookWorkspace(
                     ) {
                         AttachActionChip(Icons.Outlined.PictureAsPdf, "ملف PDF / نص", onPickDocument)
                         AttachActionChip(Icons.Outlined.Image, "صورة درس", onPickPhoto)
-                        AttachActionChip(Icons.Outlined.Notes, "ملاحظة نصية", onOpenAddTextNote)
+                        AttachActionChip(Icons.AutoMirrored.Outlined.Notes, "ملاحظة نصية", onOpenAddTextNote)
                         AttachActionChip(Icons.Outlined.VideoLibrary, "فيديو مترجم", onOpenLinkVideo)
                     }
 

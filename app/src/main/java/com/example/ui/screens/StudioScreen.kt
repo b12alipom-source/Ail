@@ -293,7 +293,7 @@ private fun StudioReadyContent(
     val lifecycleOwner = LocalLifecycleOwner.current
     var isVideoUnavailable by remember(state.project.videoUri, state.project.archivedVideoUri) { mutableStateOf(false) }
     val playbackCandidates = remember(state.project.videoUri, state.project.archivedVideoUri) {
-        com.example.vault.selectPlayableUriCandidates(
+        com.example.media.selectPlayableUriCandidates(
             state.project.videoUri,
             state.project.archivedVideoUri
         )

@@ -117,7 +117,7 @@ jobs:
           KEYSTORE_PATH: ${{ runner.temp }}/release.jks
           STORE_PASSWORD: ${{ env.STORE_PASS_VAL }}
           KEY_PASSWORD: ${{ env.KEY_PASS_VAL }}
-        run: gradle assembleRelease bundleRelease --no-daemon
+        run: gradle :app:compileReleaseKotlin assembleRelease bundleRelease --no-daemon
 
       - name: Package APK & AAB with SHA-256 verification
         run: |
@@ -130,13 +130,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v4.5
-          name: Bayan V4.5 (Supercharged AI Study Studio + Visual Infographics + Streaming Chat)
+          name: Bayan V4.5 (AI Video Translator + Study Studio)
           body: |
-            تطبيق بيان v4.5 — الترقية الشاملة لمساعد الدراسة بالذكاء الاصطناعي المتكامل:
-            - تلخيص عميق ومنظم مع مصطلحات، أمثلة، تنبيهات امتحانية، وخرائط ذهنية تفاعلية.
-            - توليد ملخصات صور وإنفوجرافيك تعليمية بالذكاء الاصطناعي (Nano Banana 2.1) مع التكبير والحفظ والمشاركة.
-            - محادثة معلم ذكي متدفقة كلمة بكلمة تدعم إرفاق صور المسائل والملفات مباشرة داخل الشات.
-            - تشخيص شفاف لحالة الاتصال مع خيار إدخال مفتاح Gemini شخصي اختياري للعمل بأقصى قوة.
+            تطبيق بيان v4.5 — استوديو ترجمة الفيديو والصوت ومساعد الدراسة بالذكاء الاصطناعي:
+            - حفظ داخلي تلقائي وآمن للفيديوهات المترجمة والملخصات داخل التطبيق مع تنظيف الكاش المؤقت.
+            - تلخيص عميق ومنظم مع مصطلحات، أمثلة، تنبيهات امتحانية، وخرائط ذهنية ومشاركة بنقرة واحدة.
+            - توليد ملخصات صور وإنفوجرافيك تعليمية ومحادثة معلم ذكي متدفقة كلمة بكلمة.
+            - دعم الترجمة المحلية أوفلاين (ML Kit و Vosk) وخيار مفتاح Gemini الشخصي.
             - نوع التوقيع: ${{ env.KEYSTORE_MODE }}
             - بصمة شهادة التطبيق (SHA-256): `${{ env.CERT_SHA256 }}`
             - بصمة ملف APK (SHA-256): `${{ env.APK_SHA256 }}`
