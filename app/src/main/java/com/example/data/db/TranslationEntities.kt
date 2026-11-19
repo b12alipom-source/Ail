@@ -75,6 +75,9 @@ data class StudyNotebookEntity(
     val totalDays: Int = 5,
     val summaryMarkdown: String = "",
     val keyPointsText: String = "",
+    val dossierJson: String = "",
+    val mindMapJson: String = "",
+    val lastEngineLabel: String = "",
     val linkedProjectId: Long? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
@@ -100,6 +103,29 @@ data class StudyAttachmentEntity(
     val mimeType: String,
     val localFilePath: String,
     val extractedText: String,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(
+    tableName = "study_visuals",
+    foreignKeys = [
+        ForeignKey(
+            entity = StudyNotebookEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["notebookId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [Index(value = ["notebookId"])]
+)
+data class StudyVisualEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val notebookId: Long,
+    val title: String,
+    val styleKey: String,
+    val localImagePath: String,
+    val promptSummary: String,
+    val engineLabel: String = "",
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -145,5 +171,8 @@ data class StudyMessageEntity(
     val isUser: Boolean,
     val messageText: String,
     val isOfflineGenerated: Boolean = false,
+    val attachmentPath: String = "",
+    val attachmentName: String = "",
+    val attachmentMimeType: String = "",
     val createdAt: Long = System.currentTimeMillis()
 )

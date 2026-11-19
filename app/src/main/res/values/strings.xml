@@ -1,7 +1,7 @@
 <resources>
     <string name="app_name">بيان</string>
     <string name="app_subtitle">مترجم مستقل للفيديو والصوت والنصوص</string>
-    <string name="version_badge">v4.0</string>
+    <string name="version_badge">v4.5</string>
     <string name="tab_video_studio">استوديو الفيديو</string>
     <string name="tab_voice_translator">المترجم الفوري</string>
     <string name="tab_study_studio">مساعد الدراسة</string>
@@ -45,5 +45,5 @@
     <string name="voice_empty_history">ابدأ بتسجيل جملة أو كتابة نص للترجمة الفورية (سحابياً أو أوفلاين).</string>
     <string name="voice_listen_desc">استماع للنطق</string>
     <string name="cloud_status_title">مركز الاستقلالية والأمان</string>
-    <string name="cloud_status_badge">مستقل وآمن • v4.0</string>
+    <string name="cloud_status_badge">مستقل وآمن • v4.5</string>
 </resources>

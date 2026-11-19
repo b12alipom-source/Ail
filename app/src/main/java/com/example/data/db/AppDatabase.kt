@@ -15,10 +15,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         VoiceTranslationEntity::class,
         StudyNotebookEntity::class,
         StudyAttachmentEntity::class,
+        StudyVisualEntity::class,
         StudyScheduleItemEntity::class,
         StudyMessageEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -132,6 +133,35 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE study_notebooks ADD COLUMN dossierJson TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE study_notebooks ADD COLUMN mindMapJson TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE study_notebooks ADD COLUMN lastEngineLabel TEXT NOT NULL DEFAULT ''")
+
+                db.execSQL("ALTER TABLE study_messages ADD COLUMN attachmentPath TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE study_messages ADD COLUMN attachmentName TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE study_messages ADD COLUMN attachmentMimeType TEXT NOT NULL DEFAULT ''")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS study_visuals (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        notebookId INTEGER NOT NULL,
+                        title TEXT NOT NULL,
+                        styleKey TEXT NOT NULL,
+                        localImagePath TEXT NOT NULL,
+                        promptSummary TEXT NOT NULL,
+                        engineLabel TEXT NOT NULL DEFAULT '',
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(notebookId) REFERENCES study_notebooks(id) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_study_visuals_notebookId ON study_visuals(notebookId)")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -139,7 +169,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "bayan_translations.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }

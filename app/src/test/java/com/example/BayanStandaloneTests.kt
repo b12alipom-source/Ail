@@ -15,6 +15,11 @@ import com.example.media.selectBestCatalogModelForLanguage
 import com.example.media.stripTopArchiveDirectory
 import com.example.study.answerStudyQuestionOffline
 import com.example.study.buildOfflineStudyPlan
+import com.example.study.extractBase64ImageFromGeminiRestJson
+import com.example.study.extractSseDataPayload
+import com.example.study.extractTextFromGeminiRestJson
+import com.example.study.formatRestHttpError
+import com.example.study.parseStudyDossierJson
 import com.example.study.parseStudyPlanJson
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -267,5 +272,96 @@ class BayanStandaloneTests {
         assertTrue(parsed.keyPointsText.contains("• نقطة أولى"))
         assertEquals(1, parsed.scheduleTasks.size)
         assertEquals(45, parsed.scheduleTasks[0].durationMinutes)
+    }
+
+    @Test
+    fun parseStudyPlanJson_parsesRichDossierAndMindMapBranches() {
+        val raw = """
+            {
+              "overview": "دراسة شاملة لقوانين الحركة الكلاسيكية وتطبيقاتها.",
+              "sections": [
+                {
+                  "heading": "قانون نيوتن الثاني",
+                  "explanation": "يربط بين القوة المحصلة والكتلة والتسارع.",
+                  "keyFormulaOrRule": "F = m × a",
+                  "example": "جسم كتلته 2 كغ بتسارع 3 م/ث² يتأثر بقوة 6 نيوتن."
+                }
+              ],
+              "glossary": [
+                { "term": "التسارع (Acceleration)", "definition": "معدل تغير السرعة بالنسبة للزمن." }
+              ],
+              "examTips": ["تأكد من تحويل الكتلة إلى الكيلوغرام قبل التعويض."],
+              "keyPoints": ["القوة تساوي الكتلة ضرب التسارع"],
+              "mindMapRootTitle": "الميكانيكا",
+              "mindMapBranches": [
+                {
+                  "title": "القوى والحركة",
+                  "colorTag": "emerald",
+                  "subtopics": ["القصور الذاتي", "F = ma", "رد الفعل"]
+                }
+              ],
+              "schedule": []
+            }
+        """.trimIndent()
+
+        val parsed = parseStudyPlanJson(
+            rawJson = raw,
+            fallbackDailyMinutes = 60,
+            fallbackTotalDays = 2,
+            engineLabel = "سحابي • gemini-4-argon"
+        )
+        assertEquals("سحابي • gemini-4-argon", parsed.engineUsedLabel)
+        assertTrue(parsed.summaryMarkdown.contains("قانون نيوتن الثاني"))
+        assertTrue(parsed.summaryMarkdown.contains("F = m × a"))
+        assertEquals(2, parsed.scheduleTasks.size)
+
+        val dossier = parseStudyDossierJson(parsed.dossierJson)
+        assertNotNull(dossier)
+        assertEquals(1, dossier?.sections?.size)
+        assertEquals("F = m × a", dossier?.sections?.first()?.keyFormulaOrRule)
+        assertEquals("الميكانيكا", dossier?.mindMapRootTitle)
+        assertEquals(1, dossier?.mindMapBranches?.size)
+        assertEquals(3, dossier?.mindMapBranches?.first()?.subtopics?.size)
+    }
+
+    @Test
+    fun personalRestHelpers_extractTextImageAndSsePayloadsCleanly() {
+        assertNull(extractSseDataPayload("data: [DONE]"))
+        assertEquals("{\"candidates\":[]}", extractSseDataPayload("data: {\"candidates\":[]}"))
+
+        val restTextJson = """
+            {
+              "candidates": [
+                {
+                  "content": {
+                    "parts": [
+                      {"text": "مرحباً "},
+                      {"text": "بالطالب"}
+                    ]
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+        assertEquals("مرحباً بالطالب", extractTextFromGeminiRestJson(restTextJson))
+
+        val restImageJson = """
+            {
+              "candidates": [
+                {
+                  "content": {
+                    "parts": [
+                      {"inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgo="}}
+                    ]
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+        assertEquals("iVBORw0KGgo=", extractBase64ImageFromGeminiRestJson(restImageJson))
+
+        val err = formatRestHttpError(403, """{"error":{"message":"API key not valid"}}""")
+        assertTrue(err.contains("403"))
+        assertTrue(err.contains("API key not valid"))
     }
 }

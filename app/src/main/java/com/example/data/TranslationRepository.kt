@@ -5,6 +5,7 @@ import com.example.data.db.StudyAttachmentEntity
 import com.example.data.db.StudyMessageEntity
 import com.example.data.db.StudyNotebookEntity
 import com.example.data.db.StudyScheduleItemEntity
+import com.example.data.db.StudyVisualEntity
 import com.example.data.db.SubtitleCueEntity
 import com.example.data.db.TranslationDao
 import com.example.data.db.VideoProjectEntity
@@ -201,6 +202,19 @@ class TranslationRepository(
         dao.deleteStudyAttachmentById(attachmentId)
     }
 
+    fun observeStudyVisuals(notebookId: Long): Flow<List<StudyVisualEntity>> =
+        dao.observeStudyVisuals(notebookId)
+
+    suspend fun getStudyVisuals(notebookId: Long): List<StudyVisualEntity> =
+        dao.getStudyVisuals(notebookId)
+
+    suspend fun addStudyVisual(visual: StudyVisualEntity): Long =
+        dao.insertStudyVisual(visual)
+
+    suspend fun deleteStudyVisual(visualId: Long) {
+        dao.deleteStudyVisualById(visualId)
+    }
+
     fun observeStudySchedule(notebookId: Long): Flow<List<StudyScheduleItemEntity>> =
         dao.observeStudySchedule(notebookId)
 
@@ -224,6 +238,9 @@ class TranslationRepository(
             notebookId = notebookId,
             summary = plan.summaryMarkdown,
             keyPoints = plan.keyPointsText,
+            dossierJson = plan.dossierJson,
+            mindMapJson = plan.mindMapJson,
+            engineLabel = plan.engineUsedLabel,
             items = entities,
             updatedAt = System.currentTimeMillis()
         )
@@ -243,14 +260,20 @@ class TranslationRepository(
         notebookId: Long,
         isUser: Boolean,
         text: String,
-        isOfflineGenerated: Boolean = false
+        isOfflineGenerated: Boolean = false,
+        attachmentPath: String = "",
+        attachmentName: String = "",
+        attachmentMimeType: String = ""
     ): Long {
         return dao.insertStudyMessage(
             StudyMessageEntity(
                 notebookId = notebookId,
                 isUser = isUser,
                 messageText = text.trim(),
-                isOfflineGenerated = isOfflineGenerated
+                isOfflineGenerated = isOfflineGenerated,
+                attachmentPath = attachmentPath,
+                attachmentName = attachmentName,
+                attachmentMimeType = attachmentMimeType
             )
         )
     }

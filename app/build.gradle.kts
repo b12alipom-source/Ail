@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.bayan.vxqmrt"
     minSdk = 24
     targetSdk = 36
-    versionCode = 10
-    versionName = "4.0"
+    versionCode = 11
+    versionName = "4.5"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -109,7 +109,7 @@ dependencies {
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
-  // implementation(libs.coil.compose)
+  implementation(libs.coil.compose)
   // implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   // Uncomment to use Firestore:

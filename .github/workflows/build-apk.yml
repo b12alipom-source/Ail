@@ -121,32 +121,33 @@ jobs:
 
       - name: Package APK & AAB with SHA-256 verification
         run: |
-          cp app/build/outputs/apk/release/app-release.apk Bayan-v4.0.apk
-          cp app/build/outputs/bundle/release/app-release.aab Bayan-v4.0.aab
-          APK_SHA256=$(sha256sum Bayan-v4.0.apk | awk '{print $1}')
+          cp app/build/outputs/apk/release/app-release.apk Bayan-v4.5.apk
+          cp app/build/outputs/bundle/release/app-release.aab Bayan-v4.5.aab
+          APK_SHA256=$(sha256sum Bayan-v4.5.apk | awk '{print $1}')
           echo "APK_SHA256=${APK_SHA256}" >> "$GITHUB_ENV"
 
       - name: Publish APK and AAB to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.0
-          name: Bayan V4.0 (Fullscreen Studio + Folders + AI Study Studio)
+          tag_name: v4.5
+          name: Bayan V4.5 (Supercharged AI Study Studio + Visual Infographics + Streaming Chat)
           body: |
-            تطبيق بيان v4.0 — التحديث الشامل للمشاهدة والتنظيم والدراسة:
-            - وضع ملء الشاشة بالعرض (Landscape Fullscreen) داخل مشغل الفيديو مع ظهور الترجمة وخيارات التخصيص.
-            - إعادة تسمية المقاطع المترجمة وإنشاء مجلدات مخصصة لترتيب المكتبة بسهولة.
-            - تبويب «مساعد الدراسة» الجديد: إرفاق ملفات PDF وصور الدروس والملاحظات أو ربط الفيديوهات المترجمة، مع تلخيص مخصص وجدول دراسي تفاعلي وشات تعليمي (سحابي + أوفلاين).
+            تطبيق بيان v4.5 — الترقية الشاملة لمساعد الدراسة بالذكاء الاصطناعي المتكامل:
+            - تلخيص عميق ومنظم مع مصطلحات، أمثلة، تنبيهات امتحانية، وخرائط ذهنية تفاعلية.
+            - توليد ملخصات صور وإنفوجرافيك تعليمية بالذكاء الاصطناعي (Nano Banana 2.1) مع التكبير والحفظ والمشاركة.
+            - محادثة معلم ذكي متدفقة كلمة بكلمة تدعم إرفاق صور المسائل والملفات مباشرة داخل الشات.
+            - تشخيص شفاف لحالة الاتصال مع خيار إدخال مفتاح Gemini شخصي اختياري للعمل بأقصى قوة.
             - نوع التوقيع: ${{ env.KEYSTORE_MODE }}
             - بصمة شهادة التطبيق (SHA-256): `${{ env.CERT_SHA256 }}`
             - بصمة ملف APK (SHA-256): `${{ env.APK_SHA256 }}`
           files: |
-            Bayan-v4.0.apk
-            Bayan-v4.0.aab
+            Bayan-v4.5.apk
+            Bayan-v4.5.aab
 
       - name: Upload APK and AAB artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Bayan-v4.0-Artifacts
+          name: Bayan-v4.5-Artifacts
           path: |
-            Bayan-v4.0.apk
-            Bayan-v4.0.aab
+            Bayan-v4.5.apk
+            Bayan-v4.5.aab

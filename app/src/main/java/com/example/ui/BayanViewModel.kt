@@ -15,8 +15,11 @@ import com.example.ai.verifyOrRefreshAppCheckToken
 import com.example.data.FolderAccent
 import com.example.data.GeneratedSegment
 import com.example.data.LanguageOption
+import com.example.data.StudyAiTier
 import com.example.data.StudyAttachmentType
+import com.example.data.StudyEngineConfig
 import com.example.data.StudyMethod
+import com.example.data.StudyVisualStyle
 import com.example.data.SubtitleDisplayMode
 import com.example.data.SupportedLanguages
 import com.example.data.TranslationRepository
@@ -29,6 +32,7 @@ import com.example.data.db.StudyAttachmentEntity
 import com.example.data.db.StudyMessageEntity
 import com.example.data.db.StudyNotebookEntity
 import com.example.data.db.StudyScheduleItemEntity
+import com.example.data.db.StudyVisualEntity
 import com.example.data.db.SubtitleCueEntity
 import com.example.data.db.VideoProjectEntity
 import com.example.data.db.VoiceTranslationEntity
@@ -46,8 +50,12 @@ import com.example.media.VoskModelManager
 import com.example.security.SecurityAuditReport
 import com.example.security.SecurityInspector
 import com.example.service.TranslationKeepAliveService
+import com.example.study.IngestedAttachment
 import com.example.study.StudyAiAssistant
+import com.example.study.StudyAiException
+import com.example.study.StudyAiPreferences
 import com.example.study.StudyAttachmentExtractor
+import com.example.study.parseStudyDossierJson
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -145,6 +153,10 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         StudyAttachmentExtractor(getApplication())
     }
 
+    private val studyAiPreferences: StudyAiPreferences by lazy {
+        StudyAiPreferences(getApplication())
+    }
+
     private val studyAssistant: StudyAiAssistant by lazy {
         StudyAiAssistant()
     }
@@ -224,10 +236,24 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
             initialValue = emptyList()
         )
 
+    val studyEngineConfig: StateFlow<StudyEngineConfig>
+        get() = studyAiPreferences.config
+
     @OptIn(ExperimentalCoroutinesApi::class)
     val activeStudyMessages: StateFlow<List<StudyMessageEntity>> = _activeStudyNotebookId
         .flatMapLatest { id ->
             if (id == null) flowOf(emptyList()) else repository.observeStudyMessages(id)
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = emptyList()
+        )
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val activeStudyVisuals: StateFlow<List<StudyVisualEntity>> = _activeStudyNotebookId
+        .flatMapLatest { id ->
+            if (id == null) flowOf(emptyList()) else repository.observeStudyVisuals(id)
         }
         .stateIn(
             scope = viewModelScope,
@@ -241,8 +267,29 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
     private val _studyError = MutableStateFlow<String?>(null)
     val studyError: StateFlow<String?> = _studyError.asStateFlow()
 
+    private val _studyErrorRequiresSettings = MutableStateFlow(false)
+    val studyErrorRequiresSettings: StateFlow<Boolean> = _studyErrorRequiresSettings.asStateFlow()
+
     private val _studyNotice = MutableStateFlow<String?>(null)
     val studyNotice: StateFlow<String?> = _studyNotice.asStateFlow()
+
+    private val _isGeneratingVisual = MutableStateFlow(false)
+    val isGeneratingVisual: StateFlow<Boolean> = _isGeneratingVisual.asStateFlow()
+
+    private val _studyVisualError = MutableStateFlow<String?>(null)
+    val studyVisualError: StateFlow<String?> = _studyVisualError.asStateFlow()
+
+    private val _isTutorStreaming = MutableStateFlow(false)
+    val isTutorStreaming: StateFlow<Boolean> = _isTutorStreaming.asStateFlow()
+
+    private val _streamingTutorReply = MutableStateFlow("")
+    val streamingTutorReply: StateFlow<String> = _streamingTutorReply.asStateFlow()
+
+    private val _pendingChatAttachment = MutableStateFlow<IngestedAttachment?>(null)
+    val pendingChatAttachment: StateFlow<IngestedAttachment?> = _pendingChatAttachment.asStateFlow()
+
+    private var visualGenJob: Job? = null
+    private var tutorStreamJob: Job? = null
 
     private val _sourceLanguage = MutableStateFlow(SupportedLanguages.autoDetect)
     val sourceLanguage: StateFlow<LanguageOption> = _sourceLanguage.asStateFlow()
@@ -1161,10 +1208,39 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // --- Study Studio Actions ---
+    fun savePersonalGeminiKey(apiKey: String) {
+        val clean = apiKey.trim()
+        if (clean.isEmpty()) return
+        studyAiPreferences.savePersonalApiKey(clean, autoActivate = true)
+        _studyError.value = null
+        _studyErrorRequiresSettings.value = false
+        _studyVisualError.value = null
+        _studyNotice.value = "تم حفظ وتفعيل مفتاح Gemini الشخصي على جهازك."
+    }
+
+    fun clearPersonalGeminiKey() {
+        studyAiPreferences.clearPersonalApiKey()
+        _studyNotice.value = "تم مسح المفتاح الشخصي والعودة للمسار السحابي الافتراضي."
+    }
+
+    fun setPreferPersonalGeminiKey(prefer: Boolean) {
+        studyAiPreferences.setPreferPersonalKey(prefer)
+        _studyError.value = null
+        _studyErrorRequiresSettings.value = false
+    }
+
+    fun setStudyAiTier(tier: StudyAiTier) {
+        studyAiPreferences.setPreferredTier(tier)
+    }
+
     fun selectStudyNotebook(notebookId: Long?) {
         _activeStudyNotebookId.value = notebookId
         _studyError.value = null
+        _studyErrorRequiresSettings.value = false
+        _studyVisualError.value = null
         _studyNotice.value = null
+        _streamingTutorReply.value = ""
+        _pendingChatAttachment.value = null
     }
 
     fun createStudyNotebook(
@@ -1243,6 +1319,8 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val atts = repository.getStudyAttachments(notebookId)
             atts.forEach { studyExtractor.deleteLocalFileIfExists(it.localFilePath) }
+            val visuals = repository.getStudyVisuals(notebookId)
+            visuals.forEach { studyExtractor.deleteLocalFileIfExists(it.localImagePath) }
             if (_activeStudyNotebookId.value == notebookId) {
                 _activeStudyNotebookId.value = null
             }
@@ -1372,8 +1450,9 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
         val notebookId = _activeStudyNotebookId.value ?: return
         viewModelScope.launch {
             _studyError.value = null
+            _studyErrorRequiresSettings.value = false
             _studyNotice.value = null
-            _studyBusyMessage.value = "جاري تحليل ملفاتك وصناعة الملخص والجدول المخصص…"
+            _studyBusyMessage.value = "جاري التحليل العميق للمرفقات وبناء الملخص والخريطة الذهنية والجدول…"
             try {
                 val notebook = repository.getStudyNotebook(notebookId) ?: return@launch
                 val method = methodOverride ?: StudyMethod.fromKey(notebook.preferredMethod)
@@ -1392,32 +1471,150 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
 
                 val attachments = repository.getStudyAttachments(notebookId)
                 if (attachments.isEmpty()) {
-                    _studyError.value = "أرفق ملف PDF أو صورة أو ملاحظة أو فيديو مترجم أولاً ليقوم المساعد بتلخيصه."
+                    _studyError.value = "أرفق ملف PDF أو صورة أو ملاحظة أو فيديو مترجم أولاً ليقوم المساعد بتحليله."
                     return@launch
                 }
 
                 val plan = studyAssistant.generateStudyPlan(
+                    config = studyAiPreferences.currentConfig(),
                     notebookTitle = notebook.title,
                     method = method,
                     dailyMinutes = dailyMins,
                     totalDays = days,
                     attachments = attachments,
-                    preferOffline = _offlineEngineMode.value
+                    explicitOfflineOnly = _offlineEngineMode.value
                 )
                 repository.saveGeneratedStudyPlan(notebookId, plan)
                 _studyNotice.value = if (plan.isOfflineFallback) {
-                    "تم إنشاء الملخص والجدول محلياً على جهازك (وضع أوفلاين)."
+                    "تم إنشاء الملخص والجدول محلياً على جهازك (وضع أوفلاين المفعّل)."
                 } else {
-                    "تم توليد الملخص الذكي والجدول المخصص بنجاح."
+                    "تم إعداد الملخص المتكامل والخريطة الذهنية والجدول (${plan.engineUsedLabel})."
                 }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: StudyAiException) {
+                Log.w(TAG, "Study AI error: ${e.message}", e)
+                _studyError.value = e.message
+                _studyErrorRequiresSettings.value = e.isAppCheckOrAuthError
             } catch (e: Exception) {
                 Log.e(TAG, "Study generation failed", e)
                 _studyError.value = e.localizedMessage ?: "تعذر إنشاء الملخص والجدول."
             } finally {
                 _studyBusyMessage.value = null
             }
+        }
+    }
+
+    fun generateStudyVisual(style: StudyVisualStyle) {
+        val notebookId = _activeStudyNotebookId.value ?: return
+        if (_isGeneratingVisual.value) return
+        if (_offlineEngineMode.value) {
+            _studyVisualError.value = "توليد ملخصات الصور بالذكاء الاصطناعي يتطلب إيقاف «الوضع المحلي أوفلاين» أو استخدام مفتاح Gemini شخصي."
+            return
+        }
+
+        visualGenJob?.cancel()
+        visualGenJob = viewModelScope.launch {
+            _isGeneratingVisual.value = true
+            _studyVisualError.value = null
+            _studyErrorRequiresSettings.value = false
+            try {
+                val notebook = repository.getStudyNotebook(notebookId) ?: return@launch
+                val attachments = repository.getStudyAttachments(notebookId)
+                if (attachments.isEmpty() && notebook.summaryMarkdown.isBlank()) {
+                    _studyVisualError.value = "أرفق ملفاً أو ولّد ملخص المادة أولاً ليصمم الذكاء الاصطناعي صورة تلخيص دقيقة لمادتك."
+                    return@launch
+                }
+                val dossier = parseStudyDossierJson(notebook.dossierJson)
+                val generated = studyAssistant.generateStudyVisual(
+                    config = studyAiPreferences.currentConfig(),
+                    notebookTitle = notebook.title,
+                    style = style,
+                    dossier = dossier,
+                    fallbackSummary = notebook.summaryMarkdown,
+                    attachments = attachments
+                )
+
+                val savedPath = when {
+                    generated.bitmap != null -> studyExtractor.saveVisualBitmap(generated.bitmap)
+                    generated.rawBytes != null -> studyExtractor.saveVisualBytes(generated.rawBytes)
+                    else -> throw IllegalStateException("لم يرجع النموذج بيانات صورة صالحة.")
+                }
+
+                repository.addStudyVisual(
+                    StudyVisualEntity(
+                        notebookId = notebookId,
+                        title = generated.title,
+                        styleKey = style.key,
+                        localImagePath = savedPath,
+                        promptSummary = generated.promptSummary,
+                        engineLabel = generated.engineLabel
+                    )
+                )
+                _studyNotice.value = "تم توليد «${style.arabicLabel}» وحفظه في معرض المادة."
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: StudyAiException) {
+                _studyVisualError.value = e.message
+                _studyErrorRequiresSettings.value = e.isAppCheckOrAuthError
+            } catch (e: Exception) {
+                Log.e(TAG, "Study visual generation failed", e)
+                _studyVisualError.value = e.localizedMessage ?: "تعذر توليد ملخص الصورة."
+            } finally {
+                _isGeneratingVisual.value = false
+            }
+        }
+    }
+
+    fun saveStudyVisualToGallery(visual: StudyVisualEntity, onShareFallback: (String) -> Unit) {
+        viewModelScope.launch {
+            val res = studyExtractor.exportVisualToGallery(visual.localImagePath, visual.title)
+            res.onSuccess { msg ->
+                _studyNotice.value = msg
+            }.onFailure { err ->
+                if (err is UnsupportedOperationException) {
+                    onShareFallback(visual.localImagePath)
+                } else {
+                    _studyVisualError.value = err.localizedMessage ?: "تعذر حفظ الصورة في المعرض."
+                }
+            }
+        }
+    }
+
+    fun deleteStudyVisual(visual: StudyVisualEntity) {
+        viewModelScope.launch {
+            studyExtractor.deleteLocalFileIfExists(visual.localImagePath)
+            repository.deleteStudyVisual(visual.id)
+        }
+    }
+
+    fun dismissStudyVisualError() {
+        _studyVisualError.value = null
+    }
+
+    fun attachChatMediaUri(uri: Uri) {
+        viewModelScope.launch {
+            _studyError.value = null
+            _studyBusyMessage.value = "جاري تجهيز المرفق للمحادثة…"
+            try {
+                val ingested = studyExtractor.ingestChatAttachment(uri)
+                _pendingChatAttachment.value = ingested
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Chat attachment ingest failed", e)
+                _studyError.value = e.localizedMessage ?: "تعذر قراءة الملف المرفق."
+            } finally {
+                _studyBusyMessage.value = null
+            }
+        }
+    }
+
+    fun clearPendingChatAttachment() {
+        val current = _pendingChatAttachment.value
+        if (current != null) {
+            studyExtractor.deleteLocalFileIfExists(current.localFilePath)
+            _pendingChatAttachment.value = null
         }
     }
 
@@ -1429,53 +1626,92 @@ class BayanViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendStudyTutorQuestion(questionText: String) {
         val notebookId = _activeStudyNotebookId.value ?: return
-        val cleanQuestion = questionText.trim()
+        if (_isTutorStreaming.value) return
+        val pendingAtt = _pendingChatAttachment.value
+        val cleanQuestion = questionText.trim().ifBlank {
+            if (pendingAtt != null) "حلّل هذا المرفق واشرح محتواه أو حلّ المسألة التي فيه خطوة بخطوة." else ""
+        }
         if (cleanQuestion.isEmpty()) return
 
-        viewModelScope.launch {
+        tutorStreamJob?.cancel()
+        tutorStreamJob = viewModelScope.launch {
             _studyError.value = null
-            _studyBusyMessage.value = "المعلم الذكي يفكر في إجابتك…"
+            _studyErrorRequiresSettings.value = false
+            _isTutorStreaming.value = true
+            _streamingTutorReply.value = ""
+            _pendingChatAttachment.value = null
+
             try {
                 val notebook = repository.getStudyNotebook(notebookId) ?: return@launch
                 val attachments = repository.getStudyAttachments(notebookId)
                 val history = repository.getStudyMessages(notebookId)
-                repository.addStudyMessage(notebookId, isUser = true, text = cleanQuestion)
 
-                val (answer, isOffline) = studyAssistant.askStudyTutor(
+                repository.addStudyMessage(
+                    notebookId = notebookId,
+                    isUser = true,
+                    text = cleanQuestion,
+                    attachmentPath = pendingAtt?.localFilePath.orEmpty(),
+                    attachmentName = pendingAtt?.displayName.orEmpty(),
+                    attachmentMimeType = pendingAtt?.mimeType.orEmpty()
+                )
+
+                val result = studyAssistant.streamStudyTutorReply(
+                    config = studyAiPreferences.currentConfig(),
                     notebookTitle = notebook.title,
                     method = StudyMethod.fromKey(notebook.preferredMethod),
                     summary = notebook.summaryMarkdown,
+                    dossierJson = notebook.dossierJson,
                     attachments = attachments,
                     history = history,
                     userQuestion = cleanQuestion,
-                    preferOffline = _offlineEngineMode.value
+                    inlineAttachment = pendingAtt,
+                    explicitOfflineOnly = _offlineEngineMode.value,
+                    onChunk = { accumulated ->
+                        _streamingTutorReply.value = accumulated
+                    }
                 )
+
                 repository.addStudyMessage(
                     notebookId = notebookId,
                     isUser = false,
-                    text = answer,
-                    isOfflineGenerated = isOffline
+                    text = result.fullText,
+                    isOfflineGenerated = result.isOffline
                 )
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: StudyAiException) {
+                Log.w(TAG, "Study tutor AI error: ${e.message}", e)
+                _studyError.value = e.message
+                _studyErrorRequiresSettings.value = e.isAppCheckOrAuthError
             } catch (e: Exception) {
                 Log.e(TAG, "Study tutor Q&A failed", e)
                 _studyError.value = e.localizedMessage ?: "تعذر الرد على سؤالك حالياً."
             } finally {
-                _studyBusyMessage.value = null
+                _streamingTutorReply.value = ""
+                _isTutorStreaming.value = false
             }
         }
     }
 
     fun clearStudyChat() {
         val notebookId = _activeStudyNotebookId.value ?: return
+        tutorStreamJob?.cancel()
+        _isTutorStreaming.value = false
+        _streamingTutorReply.value = ""
         viewModelScope.launch {
+            val msgs = repository.getStudyMessages(notebookId)
+            msgs.forEach { msg ->
+                if (msg.attachmentPath.isNotBlank()) {
+                    studyExtractor.deleteLocalFileIfExists(msg.attachmentPath)
+                }
+            }
             repository.clearStudyMessages(notebookId)
         }
     }
 
     fun dismissStudyError() {
         _studyError.value = null
+        _studyErrorRequiresSettings.value = false
     }
 
     fun dismissStudyNotice() {

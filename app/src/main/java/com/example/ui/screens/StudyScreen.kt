@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Notes
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.School
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -41,6 +43,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -59,16 +62,24 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.BuildConfig
+import com.example.data.StudyDossierData
 import com.example.data.StudyMethod
+import com.example.data.StudyVisualStyle
 import com.example.data.db.StudyAttachmentEntity
 import com.example.data.db.StudyMessageEntity
 import com.example.data.db.StudyNotebookEntity
 import com.example.data.db.StudyScheduleItemEntity
+import com.example.data.db.StudyVisualEntity
+import com.example.study.IngestedAttachment
+import com.example.study.parseStudyDossierJson
 import com.example.ui.BayanViewModel
 import com.example.ui.theme.CoralError
 import com.example.ui.theme.EmeraldSuccess
@@ -83,10 +94,12 @@ import com.example.ui.theme.MidnightVoid
 import com.example.ui.theme.SilverMetallic
 import com.example.ui.theme.SilverMuted
 import com.example.ui.theme.SilverPure
+import java.io.File
 
 private enum class StudyWorkspaceTab(val label: String) {
-    SUMMARY("الملخص والنقاط"),
-    SCHEDULE("الجدول الدراسي"),
+    SUMMARY("الملخص"),
+    VISUALS("الصور والخرائط"),
+    SCHEDULE("الجدول"),
     TUTOR("المعلم الذكي")
 }
 
@@ -95,16 +108,27 @@ fun StudyScreen(
     viewModel: BayanViewModel,
     outerPadding: PaddingValues
 ) {
+    val context = LocalContext.current
     val notebooks by viewModel.studyNotebooks.collectAsStateWithLifecycle()
     val activeNotebookId by viewModel.activeStudyNotebookId.collectAsStateWithLifecycle()
     val attachments by viewModel.activeStudyAttachments.collectAsStateWithLifecycle()
+    val visuals by viewModel.activeStudyVisuals.collectAsStateWithLifecycle()
     val scheduleItems by viewModel.activeStudySchedule.collectAsStateWithLifecycle()
     val messages by viewModel.activeStudyMessages.collectAsStateWithLifecycle()
     val busyMessage by viewModel.studyBusyMessage.collectAsStateWithLifecycle()
     val studyError by viewModel.studyError.collectAsStateWithLifecycle()
+    val studyErrorRequiresSettings by viewModel.studyErrorRequiresSettings.collectAsStateWithLifecycle()
     val studyNotice by viewModel.studyNotice.collectAsStateWithLifecycle()
     val projects by viewModel.projects.collectAsStateWithLifecycle()
     val offlineEngineMode by viewModel.offlineEngineMode.collectAsStateWithLifecycle()
+    val engineConfig by viewModel.studyEngineConfig.collectAsStateWithLifecycle()
+    val isGeneratingVisual by viewModel.isGeneratingVisual.collectAsStateWithLifecycle()
+    val studyVisualError by viewModel.studyVisualError.collectAsStateWithLifecycle()
+    val isTutorStreaming by viewModel.isTutorStreaming.collectAsStateWithLifecycle()
+    val streamingTutorReply by viewModel.streamingTutorReply.collectAsStateWithLifecycle()
+    val pendingChatAttachment by viewModel.pendingChatAttachment.collectAsStateWithLifecycle()
+    val appCheckState by viewModel.appCheckStatus.collectAsStateWithLifecycle()
+    val isCheckingAppCheck by viewModel.isCheckingAppCheck.collectAsStateWithLifecycle()
 
     LaunchedEffect(notebooks, activeNotebookId) {
         if (activeNotebookId == null && notebooks.isNotEmpty()) {
@@ -115,37 +139,65 @@ fun StudyScreen(
     val activeNotebook = remember(notebooks, activeNotebookId) {
         notebooks.firstOrNull { it.id == activeNotebookId } ?: notebooks.firstOrNull()
     }
+    val parsedDossier = remember(activeNotebook?.dossierJson, activeNotebook?.mindMapJson) {
+        activeNotebook?.let { nb ->
+            parseStudyDossierJson(nb.dossierJson.ifBlank { nb.mindMapJson })
+        }
+    }
 
     var activeTab by rememberSaveable { mutableStateOf(StudyWorkspaceTab.SUMMARY) }
     var showCreateNotebookDialog by remember { mutableStateOf(false) }
     var showAddTextNoteDialog by remember { mutableStateOf(false) }
     var showLinkVideoSheet by remember { mutableStateOf(false) }
+    var showEngineSettingsSheet by remember { mutableStateOf(false) }
     var notebookPendingDelete by remember { mutableStateOf<StudyNotebookEntity?>(null) }
 
     val documentPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
-        if (uri != null) {
-            viewModel.attachStudyDocumentUri(uri)
-        }
+        if (uri != null) viewModel.attachStudyDocumentUri(uri)
     }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
-        if (uri != null) {
-            viewModel.attachStudyPhotoUri(uri)
+        if (uri != null) viewModel.attachStudyPhotoUri(uri)
+    }
+
+    val chatPhotoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) viewModel.attachChatMediaUri(uri)
+    }
+
+    val chatDocPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) viewModel.attachChatMediaUri(uri)
+    }
+
+    val shareImagePath: (String, String) -> Unit = { localPath, title ->
+        runCatching {
+            val file = File(localPath)
+            val contentUri = FileProvider.getUriForFile(
+                context,
+                "${BuildConfig.APPLICATION_ID}.fileprovider",
+                file
+            )
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "image/png"
+                putExtra(Intent.EXTRA_STREAM, contentUri)
+                putExtra(Intent.EXTRA_SUBJECT, title)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(shareIntent, "مشاركة ملخص الصورة"))
         }
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(MidnightVoid, MidnightNavy, Color(0xFF0D172B))
-                )
-            )
+            .background(Brush.verticalGradient(colors = listOf(MidnightVoid, MidnightNavy, Color(0xFF0D172B))))
             .drawBehind {
                 drawCircle(
                     brush = Brush.radialGradient(
@@ -165,11 +217,11 @@ fun StudyScreen(
                 .widthIn(max = 720.dp)
                 .align(Alignment.TopCenter)
         ) {
-            // Top Header
+            // Top Header + Active Engine Chip + Settings
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -180,16 +232,39 @@ fun StudyScreen(
                         color = SilverPure,
                         fontWeight = FontWeight.Bold
                     )
-                    Text(
-                        text = if (offlineEngineMode) {
-                            "ملخصات وجدول مخصص • يعمل محلياً أوفلاين"
-                        } else {
-                            "تلخيص PDF وصور وفيديوهات مع جدول وشرح مخصص"
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = SilverMuted
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(99.dp),
+                        color = if (engineConfig.isUsingPersonalKey) EmeraldSuccess.copy(alpha = 0.16f) else MidnightSurfaceHigh,
+                        border = BorderStroke(
+                            1.dp,
+                            if (engineConfig.isUsingPersonalKey) EmeraldSuccess.copy(alpha = 0.5f) else MidnightBorderSubtle
+                        ),
+                        modifier = Modifier
+                            .padding(top = 4.dp)
+                            .clickable { showEngineSettingsSheet = true }
+                            .testTag("study_engine_badge")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Tune,
+                                contentDescription = "إعدادات المحرك الذكي",
+                                tint = if (engineConfig.isUsingPersonalKey) EmeraldSuccess else IceSapphireGlow,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = if (offlineEngineMode) "الوضع المحلي أوفلاين (اضغط للتغيير)" else engineConfig.activeBadgeLabel(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SilverPure
+                            )
+                        }
+                    }
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Surface(
                     shape = RoundedCornerShape(99.dp),
@@ -203,12 +278,7 @@ fun StudyScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Add,
-                            contentDescription = "مادة جديدة",
-                            tint = MidnightVoid,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Icon(Icons.Filled.Add, contentDescription = "مادة جديدة", tint = MidnightVoid, modifier = Modifier.size(18.dp))
                         Text(
                             text = "مادة جديدة",
                             style = MaterialTheme.typography.labelMedium,
@@ -234,10 +304,7 @@ fun StudyScreen(
                         Surface(
                             shape = RoundedCornerShape(99.dp),
                             color = if (selected) IceSapphire.copy(alpha = 0.24f) else MidnightSurface,
-                            border = BorderStroke(
-                                1.dp,
-                                if (selected) IceSapphireGlow else MidnightBorderSubtle
-                            ),
+                            border = BorderStroke(1.dp, if (selected) IceSapphireGlow else MidnightBorderSubtle),
                             modifier = Modifier.clickable { viewModel.selectStudyNotebook(nb.id) }
                         ) {
                             Row(
@@ -258,12 +325,7 @@ fun StudyScreen(
                                         onClick = { notebookPendingDelete = nb },
                                         modifier = Modifier.size(28.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.DeleteOutline,
-                                            contentDescription = "حذف المادة",
-                                            tint = SilverMuted,
-                                            modifier = Modifier.size(15.dp)
-                                        )
+                                        Icon(Icons.Outlined.DeleteOutline, contentDescription = "حذف المادة", tint = SilverMuted, modifier = Modifier.size(15.dp))
                                     }
                                 }
                             }
@@ -274,11 +336,7 @@ fun StudyScreen(
 
             AnimatedVisibility(visible = busyMessage != null) {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    LinearProgressIndicator(
-                        color = IceSapphire,
-                        trackColor = MidnightBorderSubtle,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    LinearProgressIndicator(color = IceSapphire, trackColor = MidnightBorderSubtle, modifier = Modifier.fillMaxWidth())
                     busyMessage?.let { msg ->
                         Text(
                             text = msg,
@@ -296,18 +354,27 @@ fun StudyScreen(
             studyError?.let { err ->
                 Surface(
                     color = CoralError.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, CoralError.copy(alpha = 0.45f)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp, vertical = 4.dp),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(14.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(err, style = MaterialTheme.typography.bodySmall, color = SilverPure, modifier = Modifier.weight(1f))
-                        TextButton(onClick = { viewModel.dismissStudyError() }) {
-                            Text("إغلاق", color = SilverPure)
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(err, style = MaterialTheme.typography.bodySmall, color = SilverPure)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (studyErrorRequiresSettings) {
+                                OutlinedButton(
+                                    onClick = { showEngineSettingsSheet = true },
+                                    border = BorderStroke(1.dp, IceSapphireGlow),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("إعداد مفتاح شخصي / تشخيص", color = IceSapphireGlow)
+                                }
+                            }
+                            TextButton(onClick = { viewModel.dismissStudyError() }) {
+                                Text("إغلاق", color = SilverPure)
+                            }
                         }
                     }
                 }
@@ -348,29 +415,41 @@ fun StudyScreen(
             } else {
                 ActiveNotebookWorkspace(
                     notebook = activeNotebook,
+                    dossier = parsedDossier,
                     attachments = attachments,
+                    visuals = visuals,
                     scheduleItems = scheduleItems,
                     messages = messages,
                     isBusy = busyMessage != null,
+                    isGeneratingVisual = isGeneratingVisual,
+                    studyVisualError = studyVisualError,
+                    isTutorStreaming = isTutorStreaming,
+                    streamingTutorReply = streamingTutorReply,
+                    pendingChatAttachment = pendingChatAttachment,
                     activeTab = activeTab,
                     onSelectTab = { activeTab = it },
-                    onPickDocument = {
-                        documentPickerLauncher.launch(arrayOf("application/pdf", "text/*"))
-                    },
-                    onPickPhoto = {
-                        photoPickerLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                        )
-                    },
+                    onPickDocument = { documentPickerLauncher.launch(arrayOf("application/pdf", "text/*")) },
+                    onPickPhoto = { photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     onOpenAddTextNote = { showAddTextNoteDialog = true },
                     onOpenLinkVideo = { showLinkVideoSheet = true },
                     onRemoveAttachment = { viewModel.removeStudyAttachment(it) },
                     onGeneratePlan = { method, mins, days ->
                         viewModel.generateStudySummaryAndSchedule(method, mins, days)
                     },
-                    onToggleScheduleTask = { id, completed ->
-                        viewModel.toggleStudyScheduleTask(id, completed)
+                    onGenerateVisual = { style -> viewModel.generateStudyVisual(style) },
+                    onDismissVisualError = { viewModel.dismissStudyVisualError() },
+                    onOpenEngineSettings = { showEngineSettingsSheet = true },
+                    onSaveVisualToGallery = { visual ->
+                        viewModel.saveStudyVisualToGallery(visual) { path ->
+                            shareImagePath(path, visual.title)
+                        }
                     },
+                    onShareVisual = { visual -> shareImagePath(visual.localImagePath, visual.title) },
+                    onDeleteVisual = { visual -> viewModel.deleteStudyVisual(visual) },
+                    onToggleScheduleTask = { id, completed -> viewModel.toggleStudyScheduleTask(id, completed) },
+                    onPickChatPhoto = { chatPhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    onPickChatDoc = { chatDocPickerLauncher.launch(arrayOf("application/pdf", "text/*", "image/*")) },
+                    onClearPendingChatAttachment = { viewModel.clearPendingChatAttachment() },
                     onSendQuestion = { viewModel.sendStudyTutorQuestion(it) },
                     onClearChat = { viewModel.clearStudyChat() },
                     modifier = Modifier
@@ -379,6 +458,20 @@ fun StudyScreen(
                 )
             }
         }
+    }
+
+    if (showEngineSettingsSheet) {
+        StudyAiSettingsSheet(
+            engineConfig = engineConfig,
+            appCheckState = appCheckState,
+            isCheckingAppCheck = isCheckingAppCheck,
+            onSelectTier = { viewModel.setStudyAiTier(it) },
+            onSavePersonalKey = { viewModel.savePersonalGeminiKey(it) },
+            onTogglePreferPersonalKey = { viewModel.setPreferPersonalGeminiKey(it) },
+            onClearPersonalKey = { viewModel.clearPersonalGeminiKey() },
+            onRunAppCheckCheck = { viewModel.runAppCheckDiagnostics() },
+            onDismiss = { showEngineSettingsSheet = false }
+        )
     }
 
     if (showCreateNotebookDialog) {
@@ -419,7 +512,7 @@ fun StudyScreen(
             titleContentColor = SilverPure,
             textContentColor = SilverMetallic,
             title = { Text("حذف مادة الدراسة؟") },
-            text = { Text("سيتم حذف «${pending.title}» ومرفقاتها وجدولها الدراسي.") },
+            text = { Text("سيتم حذف «${pending.title}» ومرفقاتها وصورها وجدولها الدراسي.") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -466,31 +559,23 @@ private fun EmptyStudyOnboarding(
                     modifier = Modifier.size(64.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Outlined.School,
-                            contentDescription = null,
-                            tint = IceSapphireGlow,
-                            modifier = Modifier.size(30.dp)
-                        )
+                        Icon(Icons.Outlined.School, contentDescription = null, tint = IceSapphireGlow, modifier = Modifier.size(30.dp))
                     }
                 }
                 Text(
-                    text = "مدرّبك الدراسي المخصص",
+                    text = "نظام الدراسة الذكي المتكامل",
                     style = MaterialTheme.typography.titleLarge,
                     color = SilverPure,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "أرفق ملفات PDF أو صور المحاضرات أو الفيديوهات المترجمة، واختر أسلوب الفهم والوقت المتاح ليصنع لك «بيان» ملخصاً وجدولاً يومياً ويجيب على أسئلتك.",
+                    text = "أرفق ملفات PDF أو صور المحاضرات أو الفيديوهات المترجمة، وسيبني لك «بيان» ملفاً دراسياً شاملاً، وإنفوجرافيك بالصور، وخريطة ذهنية، ومحادثة معلم فورية.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = SilverMetallic
                 )
                 Button(
                     onClick = onCreateNotebook,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = SilverPure,
-                        contentColor = MidnightVoid
-                    ),
+                    colors = ButtonDefaults.buttonColors(containerColor = SilverPure, contentColor = MidnightVoid),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -503,10 +588,7 @@ private fun EmptyStudyOnboarding(
                 }
                 if (projectsCount > 0 && firstProjectTitle != null) {
                     TextButton(onClick = onStudyFirstVideo) {
-                        Text(
-                            text = "أو ابدأ الدراسة من الفيديو: $firstProjectTitle",
-                            color = IceSapphireGlow
-                        )
+                        Text("أو ابدأ الدراسة من الفيديو: $firstProjectTitle", color = IceSapphireGlow)
                     }
                 }
             }
@@ -517,10 +599,17 @@ private fun EmptyStudyOnboarding(
 @Composable
 private fun ActiveNotebookWorkspace(
     notebook: StudyNotebookEntity,
+    dossier: StudyDossierData?,
     attachments: List<StudyAttachmentEntity>,
+    visuals: List<StudyVisualEntity>,
     scheduleItems: List<StudyScheduleItemEntity>,
     messages: List<StudyMessageEntity>,
     isBusy: Boolean,
+    isGeneratingVisual: Boolean,
+    studyVisualError: String?,
+    isTutorStreaming: Boolean,
+    streamingTutorReply: String,
+    pendingChatAttachment: IngestedAttachment?,
     activeTab: StudyWorkspaceTab,
     onSelectTab: (StudyWorkspaceTab) -> Unit,
     onPickDocument: () -> Unit,
@@ -529,7 +618,16 @@ private fun ActiveNotebookWorkspace(
     onOpenLinkVideo: () -> Unit,
     onRemoveAttachment: (StudyAttachmentEntity) -> Unit,
     onGeneratePlan: (StudyMethod, Int, Int) -> Unit,
+    onGenerateVisual: (StudyVisualStyle) -> Unit,
+    onDismissVisualError: () -> Unit,
+    onOpenEngineSettings: () -> Unit,
+    onSaveVisualToGallery: (StudyVisualEntity) -> Unit,
+    onShareVisual: (StudyVisualEntity) -> Unit,
+    onDeleteVisual: (StudyVisualEntity) -> Unit,
     onToggleScheduleTask: (Long, Boolean) -> Unit,
+    onPickChatPhoto: () -> Unit,
+    onPickChatDoc: () -> Unit,
+    onClearPendingChatAttachment: () -> Unit,
     onSendQuestion: (String) -> Unit,
     onClearChat: () -> Unit,
     modifier: Modifier = Modifier
@@ -557,15 +655,8 @@ private fun ActiveNotebookWorkspace(
                 border = BorderStroke(1.dp, MidnightBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        text = "1. مرفقات المادة (${attachments.size})",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = SilverPure
-                    )
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("1. مرفقات المادة (${attachments.size})", style = MaterialTheme.typography.titleSmall, color = SilverPure)
 
                     Row(
                         modifier = Modifier
@@ -587,19 +678,12 @@ private fun ActiveNotebookWorkspace(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             attachments.forEach { att ->
-                                StudyAttachmentChip(
-                                    attachment = att,
-                                    onRemove = { onRemoveAttachment(att) }
-                                )
+                                StudyAttachmentChip(attachment = att, onRemove = { onRemoveAttachment(att) })
                             }
                         }
                     }
 
-                    Text(
-                        text = "2. طريقة الفهم والجدول المخصص",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = SilverPure
-                    )
+                    Text("2. طريقة الفهم والجدول المخصص", style = MaterialTheme.typography.titleSmall, color = SilverPure)
 
                     Row(
                         modifier = Modifier
@@ -612,10 +696,7 @@ private fun ActiveNotebookWorkspace(
                             Surface(
                                 shape = RoundedCornerShape(99.dp),
                                 color = if (selected) IceSapphire.copy(alpha = 0.22f) else MidnightNavy,
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (selected) IceSapphireGlow else MidnightBorderSubtle
-                                ),
+                                border = BorderStroke(1.dp, if (selected) IceSapphireGlow else MidnightBorderSubtle),
                                 modifier = Modifier.clickable { selectedMethod = method }
                             ) {
                                 Text(
@@ -676,13 +757,8 @@ private fun ActiveNotebookWorkspace(
 
                     Button(
                         enabled = !isBusy,
-                        onClick = {
-                            onGeneratePlan(selectedMethod, selectedDailyMinutes, selectedTotalDays)
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = SilverPure,
-                            contentColor = MidnightVoid
-                        ),
+                        onClick = { onGeneratePlan(selectedMethod, selectedDailyMinutes, selectedTotalDays) },
+                        colors = ButtonDefaults.buttonColors(containerColor = SilverPure, contentColor = MidnightVoid),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -691,20 +767,18 @@ private fun ActiveNotebookWorkspace(
                     ) {
                         Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "توليد الملخص والجدول الدراسي",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text("توليد الملخص المتكامل والجدول", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
 
-        // Sub-Tabs
+        // 4 Sub-Tabs (scrollable strip on narrow phones so text never truncates)
         item {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 StudyWorkspaceTab.entries.forEach { tab ->
@@ -714,7 +788,6 @@ private fun ActiveNotebookWorkspace(
                         color = if (selected) SilverPure else MidnightSurface,
                         border = BorderStroke(1.dp, if (selected) SilverPure else MidnightBorderSubtle),
                         modifier = Modifier
-                            .weight(1f)
                             .testTag("study_tab_${tab.name.lowercase()}")
                             .clickable { onSelectTab(tab) }
                     ) {
@@ -724,33 +797,47 @@ private fun ActiveNotebookWorkspace(
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                             color = if (selected) MidnightVoid else SilverMetallic,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp)
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                         )
                     }
                 }
             }
         }
 
-        // Sub-tab Content
+        // Active Tab Body
         item {
             when (activeTab) {
                 StudyWorkspaceTab.SUMMARY -> StudySummaryTabContent(
                     notebook = notebook,
-                    onGenerateClick = {
-                        onGeneratePlan(selectedMethod, selectedDailyMinutes, selectedTotalDays)
-                    }
+                    dossier = dossier,
+                    onGenerateClick = { onGeneratePlan(selectedMethod, selectedDailyMinutes, selectedTotalDays) }
+                )
+                StudyWorkspaceTab.VISUALS -> StudyVisualsAndMindMapTabContent(
+                    notebookTitle = notebook.title,
+                    dossier = dossier,
+                    visuals = visuals,
+                    isGeneratingVisual = isGeneratingVisual,
+                    visualError = studyVisualError,
+                    onGenerateVisual = onGenerateVisual,
+                    onDismissVisualError = onDismissVisualError,
+                    onOpenEngineSettings = onOpenEngineSettings,
+                    onSaveVisualToGallery = onSaveVisualToGallery,
+                    onShareVisual = onShareVisual,
+                    onDeleteVisual = onDeleteVisual
                 )
                 StudyWorkspaceTab.SCHEDULE -> StudyScheduleTabContent(
                     scheduleItems = scheduleItems,
                     onToggleCompleted = onToggleScheduleTask,
-                    onGenerateClick = {
-                        onGeneratePlan(selectedMethod, selectedDailyMinutes, selectedTotalDays)
-                    }
+                    onGenerateClick = { onGeneratePlan(selectedMethod, selectedDailyMinutes, selectedTotalDays) }
                 )
                 StudyWorkspaceTab.TUTOR -> StudyTutorChatTabContent(
                     messages = messages,
-                    isBusy = isBusy,
+                    isStreaming = isTutorStreaming,
+                    streamingReply = streamingTutorReply,
+                    pendingAttachment = pendingChatAttachment,
+                    onPickChatPhoto = onPickChatPhoto,
+                    onPickChatDoc = onPickChatDoc,
+                    onClearPendingAttachment = onClearPendingChatAttachment,
                     onSendQuestion = onSendQuestion,
                     onClearChat = onClearChat
                 )
@@ -776,17 +863,8 @@ private fun AttachActionChip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = IceSapphireGlow,
-                modifier = Modifier.size(16.dp)
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = SilverPure
-            )
+            Icon(imageVector = icon, contentDescription = label, tint = IceSapphireGlow, modifier = Modifier.size(16.dp))
+            Text(text = label, style = MaterialTheme.typography.labelMedium, color = SilverPure)
         }
     }
 }

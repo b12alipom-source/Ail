@@ -1,5 +1,6 @@
 package com.example.study
 
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -7,7 +8,10 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.os.ParcelFileDescriptor
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
 import com.example.data.GeneratedScheduleTask
@@ -42,6 +46,9 @@ class StudyAttachmentExtractor(private val context: Context) {
 
     private val attachmentsRoot: File
         get() = File(context.filesDir, "study-attachments").apply { mkdirs() }
+
+    private val visualsRoot: File
+        get() = File(context.filesDir, "study-visuals").apply { mkdirs() }
 
     private val textRecognizer by lazy {
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
@@ -113,6 +120,75 @@ class StudyAttachmentExtractor(private val context: Context) {
             extractedText = ocrText
         )
     }
+
+    suspend fun ingestChatAttachment(uri: Uri): IngestedAttachment = withContext(Dispatchers.IO) {
+        val rawMime = context.contentResolver.getType(uri)?.lowercase().orEmpty()
+        val displayName = resolveDisplayName(uri).orEmpty()
+        val isImage = rawMime.startsWith("image/") ||
+            displayName.endsWith(".jpg", ignoreCase = true) ||
+            displayName.endsWith(".jpeg", ignoreCase = true) ||
+            displayName.endsWith(".png", ignoreCase = true) ||
+            displayName.endsWith(".webp", ignoreCase = true)
+        if (isImage) ingestLecturePhoto(uri) else ingestDocumentOrPdf(uri)
+    }
+
+    suspend fun saveVisualBitmap(bitmap: Bitmap): String = withContext(Dispatchers.IO) {
+        val destFile = File(visualsRoot, "visual_${UUID.randomUUID()}.png")
+        FileOutputStream(destFile).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        }
+        destFile.absolutePath
+    }
+
+    suspend fun saveVisualBytes(bytes: ByteArray): String = withContext(Dispatchers.IO) {
+        val destFile = File(visualsRoot, "visual_${UUID.randomUUID()}.png")
+        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        if (decoded != null) {
+            FileOutputStream(destFile).use { out ->
+                decoded.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            decoded.recycle()
+        } else {
+            destFile.writeBytes(bytes)
+        }
+        destFile.absolutePath
+    }
+
+    suspend fun exportVisualToGallery(localImagePath: String, displayTitle: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val srcFile = File(localImagePath)
+                require(srcFile.exists() && srcFile.length() > 0L) { "ملف الصورة غير موجود على الجهاز." }
+
+                val safeName = displayTitle.trim()
+                    .replace(Regex("[^\\p{L}\\p{N}_-]+"), "_")
+                    .take(40)
+                    .ifBlank { "bayan_visual" } + "_${System.currentTimeMillis()}.png"
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Images.Media.DISPLAY_NAME, safeName)
+                        put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                        put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Bayan")
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                    val resolver = context.contentResolver
+                    val insertedUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                        ?: throw IllegalStateException("تعذر إنشاء سجل في معرض الصور.")
+
+                    resolver.openOutputStream(insertedUri)?.use { out ->
+                        srcFile.inputStream().use { input -> input.copyTo(out) }
+                    } ?: throw IllegalStateException("تعذر كتابة الصورة إلى المعرض.")
+
+                    values.clear()
+                    values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    resolver.update(insertedUri, values, null, null)
+                    "تم حفظ الصورة في المعرض (Pictures/Bayan)."
+                } else {
+                    throw UnsupportedOperationException("USE_SHARE_SHEET")
+                }
+            }
+        }
 
     fun savePlainNoteAttachment(title: String, noteBody: String): IngestedAttachment {
         val cleanTitle = title.trim().ifBlank { "ملاحظة دراسية" }

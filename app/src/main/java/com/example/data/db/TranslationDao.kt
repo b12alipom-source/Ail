@@ -143,12 +143,15 @@ interface TranslationDao {
     )
 
     @Query(
-        "UPDATE study_notebooks SET summaryMarkdown = :summary, keyPointsText = :keyPoints, updatedAt = :updatedAt WHERE id = :notebookId"
+        "UPDATE study_notebooks SET summaryMarkdown = :summary, keyPointsText = :keyPoints, dossierJson = :dossierJson, mindMapJson = :mindMapJson, lastEngineLabel = :engineLabel, updatedAt = :updatedAt WHERE id = :notebookId"
     )
     suspend fun updateStudyNotebookSummary(
         notebookId: Long,
         summary: String,
         keyPoints: String,
+        dossierJson: String,
+        mindMapJson: String,
+        engineLabel: String,
         updatedAt: Long
     )
 
@@ -167,6 +170,18 @@ interface TranslationDao {
     @Query("DELETE FROM study_attachments WHERE id = :attachmentId")
     suspend fun deleteStudyAttachmentById(attachmentId: Long)
 
+    @Query("SELECT * FROM study_visuals WHERE notebookId = :notebookId ORDER BY createdAt DESC")
+    fun observeStudyVisuals(notebookId: Long): Flow<List<StudyVisualEntity>>
+
+    @Query("SELECT * FROM study_visuals WHERE notebookId = :notebookId ORDER BY createdAt DESC")
+    suspend fun getStudyVisuals(notebookId: Long): List<StudyVisualEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertStudyVisual(visual: StudyVisualEntity): Long
+
+    @Query("DELETE FROM study_visuals WHERE id = :visualId")
+    suspend fun deleteStudyVisualById(visualId: Long)
+
     @Query("SELECT * FROM study_schedule_items WHERE notebookId = :notebookId ORDER BY dayNumber ASC, id ASC")
     fun observeStudySchedule(notebookId: Long): Flow<List<StudyScheduleItemEntity>>
 
@@ -181,10 +196,21 @@ interface TranslationDao {
         notebookId: Long,
         summary: String,
         keyPoints: String,
+        dossierJson: String,
+        mindMapJson: String,
+        engineLabel: String,
         items: List<StudyScheduleItemEntity>,
         updatedAt: Long
     ) {
-        updateStudyNotebookSummary(notebookId, summary, keyPoints, updatedAt)
+        updateStudyNotebookSummary(
+            notebookId = notebookId,
+            summary = summary,
+            keyPoints = keyPoints,
+            dossierJson = dossierJson,
+            mindMapJson = mindMapJson,
+            engineLabel = engineLabel,
+            updatedAt = updatedAt
+        )
         deleteStudyScheduleForNotebook(notebookId)
         insertStudyScheduleItems(items)
     }

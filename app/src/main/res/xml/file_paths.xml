@@ -3,4 +3,10 @@
     <cache-path
         name="exported_subtitles"
         path="exports/" />
+    <files-path
+        name="study_visuals"
+        path="study-visuals/" />
+    <files-path
+        name="study_attachments"
+        path="study-attachments/" />
 </paths>
